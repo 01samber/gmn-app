@@ -155,8 +155,18 @@ export default function Technicians() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
 
+  // ✅ Refresh usage counts when returning from other pages
+  const [refreshKey, setRefreshKey] = useState(0);
+  useEffect(() => {
+    function onFocus() {
+      setRefreshKey((k) => k + 1);
+    }
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
   // usage maps for “do not delete if referenced”
-  const usage = useMemo(() => computeUsageMaps(), [techs]);
+  const usage = useMemo(() => computeUsageMaps(), [techs.length, refreshKey]);
 
   useEffect(() => {
     saveTechs(techs);
@@ -289,15 +299,14 @@ export default function Technicians() {
     if (!tech) return;
 
     if (!tech.blacklisted) {
-      const ok = confirm(
+      const ok = window.confirm(
         `Blacklist this technician?\n\n${tech.name}\n\nThey will NOT appear in assignment lists.`
       );
       if (!ok) return;
 
-      // enforce reason in modal normally, but allow quick toggle only if reason exists or user confirms to add later
       const needsReason = !sanitizeText(tech.blacklistReason, 200);
       if (needsReason) {
-        const ok2 = confirm(
+        const ok2 = window.confirm(
           "High security: Blacklist should include a reason.\n\nPress OK to continue now (you can add reason by editing), or Cancel to go edit first."
         );
         if (!ok2) return;
@@ -311,7 +320,7 @@ export default function Technicians() {
         )
       );
     } else {
-      const ok = confirm(
+      const ok = window.confirm(
         `Remove blacklist?\n\n${tech.name}\n\nThey will become assignable again.`
       );
       if (!ok) return;
@@ -344,6 +353,7 @@ export default function Technicians() {
                 setEditing(null);
                 setOpen(true);
               }}
+              type="button"
             >
               + Add Technician
             </button>
@@ -495,6 +505,7 @@ export default function Technicians() {
                               setEditing(t);
                               setOpen(true);
                             }}
+                            type="button"
                           >
                             Edit
                           </button>
@@ -503,14 +514,17 @@ export default function Technicians() {
                             className="btn-ghost px-3 py-1.5 text-xs"
                             onClick={() => toggleBlacklist(t)}
                             title="High security: Prefer blacklisting over deleting to preserve history"
+                            type="button"
                           >
                             {t.blacklisted ? "Unblacklist" : "Blacklist"}
                           </button>
 
                           <button
-                            className="rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 dark:bg-white dark:text-slate-900 ui-hover ui-focus tap-feedback"
+                            className="rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 dark:bg-white dark:text-slate-900 ui-hover ui-focus tap-feedback disabled:opacity-60 disabled:cursor-not-allowed"
                             onClick={() => removeTech(t.id)}
+                            disabled={inUse}
                             title={inUse ? "Deletion blocked if referenced" : "Delete technician"}
+                            type="button"
                           >
                             Delete
                           </button>
@@ -534,6 +548,7 @@ export default function Technicians() {
                           setEditing(null);
                           setOpen(true);
                         }}
+                        type="button"
                       >
                         + Add your first technician
                       </button>
@@ -770,10 +785,10 @@ function TechnicianModal({ open, onClose, onSave, editing }) {
             onClick={() => {
               const next = !form.blacklisted;
               if (next) {
-                const ok = confirm("Blacklist this technician? A reason will be required.");
+                const ok = window.confirm("Blacklist this technician? A reason will be required.");
                 if (!ok) return;
               } else {
-                const ok = confirm("Remove blacklist? This will clear the blacklist reason.");
+                const ok = window.confirm("Remove blacklist? This will clear the blacklist reason.");
                 if (!ok) return;
                 update("blacklistReason", "");
               }
@@ -827,7 +842,7 @@ function TechnicianModal({ open, onClose, onSave, editing }) {
         </div>
 
         <div className="flex items-center gap-2">
-          <button onClick={onClose} className="btn-ghost px-4 py-2.5">
+          <button onClick={onClose} className="btn-ghost px-4 py-2.5" type="button">
             Cancel
           </button>
 
@@ -855,6 +870,7 @@ function TechnicianModal({ open, onClose, onSave, editing }) {
               "rounded-xl px-4 py-2.5 text-sm font-semibold text-white shadow-sm ui-hover ui-focus tap-feedback",
               canSubmit ? "bg-brand-600 hover:bg-brand-700" : "bg-slate-300 cursor-not-allowed dark:bg-slate-700",
             ].join(" ")}
+            type="button"
           >
             Save
           </button>

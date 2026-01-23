@@ -6,7 +6,8 @@
    Base Theme
    ========================= */
 :root {
-  color-scheme: light;
+  /* Let browser choose based on .dark class + system settings */
+  color-scheme: light dark;
 }
 
 html,
@@ -25,10 +26,10 @@ body {
 
 /* Better text selection */
 ::selection {
-  background: rgba(37, 99, 235, 0.22); /* brand-600-ish */
+  background: rgba(220, 38, 38, 0.22);
 }
 .dark ::selection {
-  background: rgba(96, 165, 250, 0.22); /* brand/sky tint */
+  background: rgba(239, 68, 68, 0.22);
 }
 
 /* =========================
@@ -55,13 +56,6 @@ body {
            ui-hover ui-focus;
   }
 
-  /* Consistent disabled state (security UX: clear “not allowed”) */
-  .btn-primary:disabled,
-  .btn-ghost:disabled {
-    @apply opacity-60 cursor-not-allowed;
-    transform: none !important;
-  }
-
   /* Inputs */
   .input {
     @apply w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm
@@ -71,6 +65,9 @@ body {
            dark:placeholder:text-slate-500;
   }
 
+  /* Disabled states (no brittle !important) */
+  .btn-primary:disabled,
+  .btn-ghost:disabled,
   .input:disabled {
     @apply opacity-60 cursor-not-allowed;
   }
@@ -79,10 +76,12 @@ body {
   .ui-hover {
     @apply transition-all duration-200 ease-out;
   }
-  .ui-hover:hover {
+
+  /* Don’t animate/move disabled controls */
+  .ui-hover:not(:disabled):hover {
     transform: translateY(-1px);
   }
-  .ui-hover:active {
+  .ui-hover:not(:disabled):active {
     transform: translateY(0) scale(0.98);
   }
 
@@ -119,7 +118,7 @@ body {
     }
   }
 
-  /* Tap / click feedback (soundless) */
+  /* Tap / click feedback */
   .tap-feedback {
     position: relative;
     overflow: hidden;
@@ -129,11 +128,7 @@ body {
     content: "";
     position: absolute;
     inset: 0;
-    background: radial-gradient(
-      circle,
-      rgba(255, 255, 255, 0.35) 10%,
-      transparent 12%
-    );
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.35) 10%, transparent 12%);
     transform: scale(0);
     opacity: 0;
     transition: transform 300ms, opacity 300ms;
@@ -141,30 +136,13 @@ body {
   }
 
   .dark .tap-feedback::after {
-    background: radial-gradient(
-      circle,
-      rgba(255, 255, 255, 0.2) 10%,
-      transparent 12%
-    );
+    background: radial-gradient(circle, rgba(255, 255, 255, 0.2) 10%, transparent 12%);
   }
 
   .tap-feedback:active::after {
     transform: scale(2);
     opacity: 1;
     transition: 0s;
-  }
-
-  /* Screen-reader only utility (handy for icon-only buttons) */
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border-width: 0;
   }
 }
 
@@ -202,7 +180,7 @@ select:-webkit-autofill {
 .dark input:-webkit-autofill,
 .dark textarea:-webkit-autofill,
 .dark select:-webkit-autofill {
-  box-shadow: 0 0 0px 1000px rgba(2, 6, 23, 0.9) inset; /* slate-950-ish */
+  box-shadow: 0 0 0px 1000px rgba(2, 6, 23, 0.9) inset;
 }
 
 /* =========================
@@ -235,4 +213,19 @@ select:-webkit-autofill {
   .dark .gmn-scroll::-webkit-scrollbar-thumb:hover {
     background-color: rgba(100, 116, 139, 0.95);
   }
+}
+
+@keyframes page-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-page-in {
+  animation: page-in 180ms ease-out;
 }

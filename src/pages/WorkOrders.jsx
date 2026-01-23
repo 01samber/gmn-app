@@ -4,21 +4,37 @@ import PageHeader from "../components/PageHeader";
 import StatusBadge from "../components/StatusBadge";
 import Modal from "../components/Modal";
 import PageTransition from "../components/PageTransition";
-import { Eye, UserPlus, ChevronLeft, ChevronRight, FileText } from "lucide-react";
+import {
+  Eye,
+  UserPlus,
+  ChevronLeft,
+  ChevronRight,
+  FileText,
+  FolderOpen,
+  CalendarDays,
+} from "lucide-react";
 
+const FILES_STORAGE_KEY = "gmn_files_v1";
 const TECH_STORAGE_KEY = "gmn_techs_v1";
 const WO_STORAGE_KEY = "gmn_workorders_v1";
 const PROPOSALS_STORAGE_KEY = "gmn_proposals_v1";
 const COSTS_STORAGE_KEY = "gmn_costs_v1";
 
+/**
+ * ETA RULE (important):
+ * - `etaAt` is the truth (ISO string).
+ * - `eta` is display fallback only (legacy).
+ * Calendar/Todo should use etaAt.
+ */
 const seed = [
   {
     id: "1",
     wo: "WO-1044",
     client: "TechCorp Inc.",
-    trade: "Electrical",
+    trade: "Electric",
     nte: 1500,
     status: "in_progress",
+    etaAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString(), // +2h
     eta: "Today 2:00 PM",
     city: "Riyadh",
     technicianId: "",
@@ -31,6 +47,7 @@ const seed = [
     trade: "HVAC",
     nte: 2500,
     status: "waiting",
+    etaAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(), // +24h
     eta: "Tomorrow 10:00 AM",
     city: "Jeddah",
     technicianId: "",
@@ -43,12 +60,52 @@ const seed = [
     trade: "Plumbing",
     nte: 980,
     status: "completed",
+    etaAt: "",
     eta: "Yesterday",
     city: "Dammam",
     technicianId: "",
     technicianName: "",
   },
 ];
+
+function safeParse(raw, fallback) {
+  try {
+    const v = raw ? JSON.parse(raw) : fallback;
+    return v ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function loadFiles() {
+  const parsed = safeParse(localStorage.getItem(FILES_STORAGE_KEY), []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function loadTechs() {
+  const parsed = safeParse(localStorage.getItem(TECH_STORAGE_KEY), []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function loadWorkOrders() {
+  const parsed = safeParse(localStorage.getItem(WO_STORAGE_KEY), null);
+  if (Array.isArray(parsed) && parsed.length) return parsed;
+  return null;
+}
+
+function saveWorkOrders(rows) {
+  localStorage.setItem(WO_STORAGE_KEY, JSON.stringify(rows));
+}
+
+function loadProposals() {
+  const parsed = safeParse(localStorage.getItem(PROPOSALS_STORAGE_KEY), []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function loadCosts() {
+  const parsed = safeParse(localStorage.getItem(COSTS_STORAGE_KEY), []);
+  return Array.isArray(parsed) ? parsed : [];
+}
 
 function money(n) {
   return new Intl.NumberFormat(undefined, {
@@ -68,58 +125,10 @@ function Field({ label, children }) {
   );
 }
 
-function loadTechs() {
-  try {
-    const raw = localStorage.getItem(TECH_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function loadWorkOrders() {
-  try {
-    const raw = localStorage.getItem(WO_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    if (Array.isArray(parsed) && parsed.length) return parsed;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function saveWorkOrders(rows) {
-  localStorage.setItem(WO_STORAGE_KEY, JSON.stringify(rows));
-}
-
-function loadProposals() {
-  try {
-    const raw = localStorage.getItem(PROPOSALS_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function loadCosts() {
-  try {
-    const raw = localStorage.getItem(COSTS_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
 /**
  * Strict rule:
  * - Only technicians from Tech List
  * - Exclude blacklisted
- * Optional smart matching:
- * - If tech trade is "All Trades" -> always eligible
- * - "General" WO can match "Handyman"
  */
 function normalizeTrade(s) {
   return String(s || "").trim().toLowerCase();
@@ -149,6 +158,8 @@ function Badge({ tone = "slate", children, title }) {
       "bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-900/20 dark:text-sky-200 dark:ring-sky-900/40",
     amber:
       "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-200 dark:ring-amber-900/40",
+    rose:
+      "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-900/25 dark:text-rose-200 dark:ring-rose-900/40",
   };
 
   return (
@@ -162,6 +173,45 @@ function Badge({ tone = "slate", children, title }) {
       {children}
     </span>
   );
+}
+
+function toLocalInputValue(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n) => String(n).padStart(2, "0");
+  const yyyy = d.getFullYear();
+  const mm = pad(d.getMonth() + 1);
+  const dd = pad(d.getDate());
+  const hh = pad(d.getHours());
+  const mi = pad(d.getMinutes());
+  return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
+}
+
+function fromLocalInputValue(v) {
+  // v from <input type="datetime-local"> is local time without timezone.
+  // Convert to ISO reliably.
+  if (!v) return "";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString();
+}
+
+function formatEta(etaAt, legacyEta) {
+  if (etaAt) {
+    const d = new Date(etaAt);
+    if (!Number.isNaN(d.getTime())) return d.toLocaleString();
+  }
+  return legacyEta || "TBD";
+}
+
+function isOverdue(status, etaAt) {
+  if (!etaAt) return false;
+  if (status === "completed" || status === "paid" || status === "invoiced")
+    return false;
+  const t = new Date(etaAt).getTime();
+  if (!Number.isFinite(t)) return false;
+  return t < Date.now();
 }
 
 export default function WorkOrders() {
@@ -179,12 +229,24 @@ export default function WorkOrders() {
   const [openView, setOpenView] = useState(false);
   const [viewRow, setViewRow] = useState(null);
 
-  // ✅ Persist WOs
+  // ✅ Migrate legacy rows to include etaAt (non-breaking)
+  useEffect(() => {
+    setRows((prev) =>
+      prev.map((r) => ({
+        ...r,
+        etaAt: typeof r.etaAt === "string" ? r.etaAt : "",
+        eta: typeof r.eta === "string" ? r.eta : "",
+      }))
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Persist WOs
   useEffect(() => {
     saveWorkOrders(rows);
   }, [rows]);
 
-  // ✅ Refresh badges when page refocuses (more reliable than [rows] only)
+  // Refresh badges when page refocuses
   const [refreshKey, setRefreshKey] = useState(0);
   useEffect(() => {
     function onFocus() {
@@ -196,9 +258,10 @@ export default function WorkOrders() {
 
   const proposals = useMemo(() => loadProposals(), [refreshKey, rows.length]);
   const costs = useMemo(() => loadCosts(), [refreshKey, rows.length]);
+  const files = useMemo(() => loadFiles(), [refreshKey, rows.length]);
 
   const proposalByWO = useMemo(() => {
-    const map = new Map(); // woId -> count
+    const map = new Map();
     for (const p of proposals) {
       if (!p?.woId) continue;
       map.set(p.woId, (map.get(p.woId) || 0) + 1);
@@ -207,13 +270,22 @@ export default function WorkOrders() {
   }, [proposals]);
 
   const paidByWO = useMemo(() => {
-    const map = new Map(); // woId -> paidCount
+    const map = new Map();
     for (const c of costs) {
       if (!c?.woId) continue;
       if (c.status === "paid") map.set(c.woId, (map.get(c.woId) || 0) + 1);
     }
     return map;
   }, [costs]);
+
+  const filesByWO = useMemo(() => {
+    const map = new Map();
+    for (const f of files) {
+      if (!f?.woId) continue;
+      map.set(f.woId, (map.get(f.woId) || 0) + 1);
+    }
+    return map;
+  }, [files]);
 
   const filtered = useMemo(() => {
     const text = q.trim().toLowerCase();
@@ -232,6 +304,7 @@ export default function WorkOrders() {
   }, [rows, q, status]);
 
   function createWorkOrder(form) {
+    const etaAt = fromLocalInputValue(form.etaLocal);
     const newRow = {
       id: crypto?.randomUUID ? crypto.randomUUID() : String(Date.now()),
       wo: form.wo || `WO-${Math.floor(1000 + Math.random() * 9000)}`,
@@ -239,7 +312,8 @@ export default function WorkOrders() {
       trade: form.trade,
       nte: Number(form.nte || 0),
       status: form.status,
-      eta: form.eta || "TBD",
+      etaAt, // ✅ source of truth
+      eta: etaAt ? "" : (form.etaText || "TBD"), // fallback only
       city: form.city || "",
       technicianId: "",
       technicianName: "",
@@ -250,6 +324,20 @@ export default function WorkOrders() {
   function setWorkOrderStatus(rowId, nextStatus) {
     setRows((prev) =>
       prev.map((r) => (r.id === rowId ? { ...r, status: nextStatus } : r))
+    );
+  }
+
+  function setWorkOrderEta(rowId, nextEtaAt, nextEtaText = "") {
+    setRows((prev) =>
+      prev.map((r) =>
+        r.id === rowId
+          ? {
+              ...r,
+              etaAt: nextEtaAt,
+              eta: nextEtaAt ? "" : String(nextEtaText || ""),
+            }
+          : r
+      )
     );
   }
 
@@ -280,7 +368,7 @@ export default function WorkOrders() {
       <div className="space-y-5">
         <PageHeader
           title="Work Orders"
-          subtitle="Search, filter, assign technicians, and track Proposal/Payment state."
+          subtitle="Search, filter, assign technicians, and track Proposal/Files/Payment state."
           actions={
             <div className="flex items-center gap-2">
               <button
@@ -289,11 +377,16 @@ export default function WorkOrders() {
                   setQ("");
                   setStatus("all");
                 }}
+                type="button"
               >
                 Reset
               </button>
 
-              <button className="btn-primary" onClick={() => setOpenCreate(true)}>
+              <button
+                className="btn-primary"
+                onClick={() => setOpenCreate(true)}
+                type="button"
+              >
                 + Create Work Order
               </button>
             </div>
@@ -340,7 +433,8 @@ export default function WorkOrders() {
             <div>
               <div className="text-sm font-bold">Work Orders</div>
               <div className="text-xs text-slate-500 dark:text-slate-400">
-                Badges are auto-detected from saved Proposals and paid Costs.
+                Badges are auto-detected from saved Proposals, attached Files,
+                and paid Costs. ETA uses a real timestamp (etaAt) for Calendar/Todo.
               </div>
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
@@ -367,9 +461,14 @@ export default function WorkOrders() {
                 {filtered.map((r, idx) => {
                   const proposalCount = proposalByWO.get(r.id) || 0;
                   const paidCount = paidByWO.get(r.id) || 0;
+                  const fileCount = filesByWO.get(r.id) || 0;
 
                   const needsTech =
-                    r.status === "completed" || r.status === "invoiced" || r.status === "paid";
+                    r.status === "completed" ||
+                    r.status === "invoiced" ||
+                    r.status === "paid";
+
+                  const overdue = isOverdue(r.status, r.etaAt);
 
                   return (
                     <tr
@@ -421,11 +520,18 @@ export default function WorkOrders() {
                           {proposalCount > 0 ? (
                             <Badge
                               tone="brand"
-                              title={`There ${
-                                proposalCount === 1 ? "is" : "are"
-                              } ${proposalCount} proposal(s) saved for this WO`}
+                              title={`${proposalCount} proposal(s) saved for this WO`}
                             >
                               Proposal ✓
+                            </Badge>
+                          ) : null}
+
+                          {fileCount > 0 ? (
+                            <Badge
+                              tone="sky"
+                              title={`${fileCount} file(s) attached to this WO`}
+                            >
+                              Files ✓
                             </Badge>
                           ) : null}
 
@@ -443,10 +549,22 @@ export default function WorkOrders() {
                       <td className="px-4 py-3">{r.trade}</td>
                       <td className="px-4 py-3">{r.city || "—"}</td>
                       <td className="px-4 py-3 tabular-nums">{money(r.nte)}</td>
-                      <td className="px-4 py-3">{r.eta}</td>
 
                       <td className="px-4 py-3">
-                        <StatusBadge status={r.status} />
+                        <div className="font-medium">
+                          {formatEta(r.etaAt, r.eta)}
+                        </div>
+                        {overdue ? (
+                          <div className="mt-1">
+                            <Badge tone="rose" title="ETA is in the past and WO is not closed">
+                              Overdue
+                            </Badge>
+                          </div>
+                        ) : null}
+                      </td>
+
+                      <td className="px-4 py-3">
+<StatusBadge status={r.status} compact withDot />
                       </td>
 
                       <td className="px-4 py-3 text-right">
@@ -457,6 +575,7 @@ export default function WorkOrders() {
                               setViewRow(r);
                               setOpenView(true);
                             }}
+                            type="button"
                           >
                             <Eye size={14} />
                             View
@@ -468,6 +587,7 @@ export default function WorkOrders() {
                               setAssignRow(r);
                               setOpenAssign(true);
                             }}
+                            type="button"
                           >
                             <UserPlus size={14} />
                             Assign
@@ -476,12 +596,37 @@ export default function WorkOrders() {
                           <button
                             className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800 ui-hover ui-focus tap-feedback"
                             onClick={() =>
+                              navigate("/calendar", { state: { woId: r.id } })
+                            }
+                            title="Open Calendar/Todo focused on this WO"
+                            type="button"
+                          >
+                            <CalendarDays size={14} />
+                            Calendar
+                          </button>
+
+                          <button
+                            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800 ui-hover ui-focus tap-feedback"
+                            onClick={() =>
                               navigate("/proposals", { state: { woId: r.id } })
                             }
                             title="Create proposal from this Work Order"
+                            type="button"
                           >
                             <FileText size={14} />
                             Proposal
+                          </button>
+
+                          <button
+                            className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800 ui-hover ui-focus tap-feedback"
+                            onClick={() =>
+                              navigate("/files", { state: { woId: r.id } })
+                            }
+                            title="Attach files to this Work Order"
+                            type="button"
+                          >
+                            <FolderOpen size={14} />
+                            Files
                           </button>
                         </div>
                       </td>
@@ -511,6 +656,7 @@ export default function WorkOrders() {
               <button
                 className="btn-ghost inline-flex items-center gap-2 text-xs"
                 onClick={() => alert("Pagination coming next")}
+                type="button"
               >
                 <ChevronLeft size={14} />
                 Prev
@@ -518,6 +664,7 @@ export default function WorkOrders() {
               <button
                 className="btn-ghost inline-flex items-center gap-2 text-xs"
                 onClick={() => alert("Pagination coming next")}
+                type="button"
               >
                 Next
                 <ChevronRight size={14} />
@@ -564,6 +711,16 @@ export default function WorkOrders() {
             setWorkOrderStatus(viewRow.id, next);
             setViewRow((p) => (p ? { ...p, status: next } : p));
           }}
+          onSetEta={(etaAt, etaText) => {
+            if (!viewRow) return;
+            setWorkOrderEta(viewRow.id, etaAt, etaText);
+            setViewRow((p) => (p ? { ...p, etaAt, eta: etaAt ? "" : (etaText || "") } : p));
+          }}
+          proposals={proposals}
+          files={files}
+          onGoToProposals={(woId) => navigate("/proposals", { state: { woId } })}
+          onGoToFiles={(woId) => navigate("/files", { state: { woId } })}
+          onGoToCalendar={(woId) => navigate("/calendar", { state: { woId } })}
         />
       </div>
     </PageTransition>
@@ -578,8 +735,25 @@ function CreateWorkOrderModal({ open, onClose, onCreate }) {
     city: "",
     nte: "",
     status: "waiting",
-    eta: "",
+    // ✅ real scheduling
+    etaLocal: "",
+    // legacy fallback (optional)
+    etaText: "",
   });
+
+  useEffect(() => {
+    if (!open) return;
+    setForm({
+      wo: "",
+      client: "",
+      trade: "Electrical",
+      city: "",
+      nte: "",
+      status: "waiting",
+      etaLocal: "",
+      etaText: "",
+    });
+  }, [open]);
 
   const canSubmit =
     form.client.trim().length >= 2 && String(form.nte).trim().length > 0;
@@ -592,7 +766,7 @@ function CreateWorkOrderModal({ open, onClose, onCreate }) {
     <Modal
       open={open}
       title="Create Work Order"
-      subtitle="Enterprise-ready form (backend wiring comes later)."
+      subtitle="Use a real ETA date/time so Calendar/Todo can stay synced."
       onClose={onClose}
     >
       <div className="grid gap-4 md:grid-cols-2">
@@ -634,7 +808,7 @@ function CreateWorkOrderModal({ open, onClose, onCreate }) {
             <option>Overhead Doors</option>
             <option>Window / Glass / Tinting</option>
             <option>All Trades</option>
-            <option>Other</option>
+            <option>Other (Custom)</option>
           </select>
         </Field>
 
@@ -672,14 +846,29 @@ function CreateWorkOrderModal({ open, onClose, onCreate }) {
           </select>
         </Field>
 
-        <div className="md:col-span-2">
-          <Field label="ETA (optional)">
+        <div className="md:col-span-2 grid gap-4 md:grid-cols-2">
+          <Field label="ETA (date/time — recommended)">
+            <input
+              type="datetime-local"
+              className="input"
+              value={form.etaLocal}
+              onChange={(e) => update("etaLocal", e.target.value)}
+            />
+            <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+              Calendar/Todo will use this.
+            </div>
+          </Field>
+
+          <Field label="ETA label (legacy fallback)">
             <input
               className="input"
-              placeholder="Today 2:00 PM / Tomorrow 10:00 AM"
-              value={form.eta}
-              onChange={(e) => update("eta", e.target.value)}
+              placeholder="If you refuse to schedule, put text here…"
+              value={form.etaText}
+              onChange={(e) => update("etaText", e.target.value)}
             />
+            <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
+              Only used if no date/time is set.
+            </div>
           </Field>
         </div>
       </div>
@@ -690,7 +879,7 @@ function CreateWorkOrderModal({ open, onClose, onCreate }) {
         </div>
 
         <div className="flex items-center gap-2">
-          <button onClick={onClose} className="btn-ghost px-4 py-2.5">
+          <button onClick={onClose} className="btn-ghost px-4 py-2.5" type="button">
             Cancel
           </button>
 
@@ -703,6 +892,7 @@ function CreateWorkOrderModal({ open, onClose, onCreate }) {
                 ? "bg-brand-600 hover:bg-brand-700"
                 : "bg-slate-300 cursor-not-allowed dark:bg-slate-700",
             ].join(" ")}
+            type="button"
           >
             Create
           </button>
@@ -721,11 +911,7 @@ function AssignTechnicianModal({
   onUnassign,
 }) {
   const techs = useMemo(() => loadTechs(), [open]);
-
-  const activeTechs = useMemo(
-    () => techs.filter((t) => !t.blacklisted),
-    [techs]
-  );
+  const activeTechs = useMemo(() => techs.filter((t) => !t.blacklisted), [techs]);
 
   const eligibleTechs = useMemo(() => {
     if (!row) return activeTechs;
@@ -758,10 +944,10 @@ function AssignTechnicianModal({
             No technicians found. You must add technicians first.
           </div>
           <div className="flex justify-end gap-2">
-            <button onClick={onClose} className="btn-ghost px-4 py-2.5">
+            <button onClick={onClose} className="btn-ghost px-4 py-2.5" type="button">
               Close
             </button>
-            <button onClick={onGoToTechnicians} className="btn-primary">
+            <button onClick={onGoToTechnicians} className="btn-primary" type="button">
               Go to Technicians
             </button>
           </div>
@@ -811,7 +997,7 @@ function AssignTechnicianModal({
             )}
 
             <div className="flex gap-2">
-              <button onClick={onClose} className="btn-ghost px-4 py-2.5">
+              <button onClick={onClose} className="btn-ghost px-4 py-2.5" type="button">
                 Cancel
               </button>
 
@@ -823,6 +1009,7 @@ function AssignTechnicianModal({
                   if (!chosen) return;
                   onAssign(chosen);
                 }}
+                type="button"
               >
                 Assign
               </button>
@@ -834,8 +1021,31 @@ function AssignTechnicianModal({
   );
 }
 
-function ViewWorkOrderModal({ open, row, onClose, onSetStatus }) {
+function ViewWorkOrderModal({
+  open,
+  row,
+  onClose,
+  onSetStatus,
+  onSetEta,
+  proposals = [],
+  files = [],
+  onGoToProposals,
+  onGoToFiles,
+  onGoToCalendar,
+}) {
+  const [etaLocal, setEtaLocal] = useState("");
+  const [etaText, setEtaText] = useState("");
+
+  useEffect(() => {
+    if (!open || !row) return;
+    setEtaLocal(toLocalInputValue(row.etaAt));
+    setEtaText(row.eta || "");
+  }, [open, row]);
+
   if (!row) return null;
+
+  const relatedProposals = proposals.filter((p) => p?.woId === row.id);
+  const relatedFiles = files.filter((f) => f?.woId === row.id);
 
   return (
     <Modal
@@ -862,43 +1072,192 @@ function ViewWorkOrderModal({ open, row, onClose, onSetStatus }) {
 
         <div className="card p-4">
           <div className="text-xs text-slate-500 dark:text-slate-400">ETA</div>
-          <div className="mt-1 font-semibold">{row.eta}</div>
+          <div className="mt-1 font-semibold">
+            {formatEta(row.etaAt, row.eta)}
+          </div>
+          <div className="mt-3 grid gap-3">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                ETA (date/time)
+              </div>
+              <input
+                type="datetime-local"
+                className="input mt-1"
+                value={etaLocal}
+                onChange={(e) => setEtaLocal(e.target.value)}
+              />
+            </div>
+            <div>
+              <div className="text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+                ETA label (fallback)
+              </div>
+              <input
+                className="input mt-1"
+                value={etaText}
+                onChange={(e) => setEtaText(e.target.value)}
+                placeholder="Optional…"
+              />
+            </div>
+
+            <div className="flex justify-between gap-2">
+              <button
+                type="button"
+                className="btn-ghost px-4 py-2.5"
+                onClick={() => onGoToCalendar?.(row.id)}
+              >
+                Open Calendar
+              </button>
+
+              <button
+                type="button"
+                className="btn-primary px-4 py-2.5"
+                onClick={() => {
+                  const nextEtaAt = fromLocalInputValue(etaLocal);
+                  onSetEta?.(nextEtaAt, etaText);
+                }}
+              >
+                Save ETA
+              </button>
+            </div>
+          </div>
         </div>
 
         <div className="card p-4 md:col-span-2">
           <div className="text-xs text-slate-500 dark:text-slate-400">
             Technician
           </div>
-          <div className="mt-1 font-semibold">
-            {row.technicianName || "—"}
-          </div>
+          <div className="mt-1 font-semibold">{row.technicianName || "—"}</div>
         </div>
 
         <div className="card p-4 md:col-span-2">
           <div className="text-xs text-slate-500 dark:text-slate-400">Status</div>
           <div className="mt-2 flex flex-wrap gap-2">
-            {["waiting", "in_progress", "completed", "invoiced", "paid"].map((s) => (
-              <button
-                key={s}
-                className={[
-                  "rounded-xl px-3 py-2 text-xs font-semibold ui-hover ui-focus tap-feedback",
-                  row.status === s
-                    ? "bg-brand-600 text-white"
-                    : "border border-slate-200 bg-white hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800",
-                ].join(" ")}
-                onClick={() => onSetStatus?.(s)}
-              >
-                {s.replace("_", " ").toUpperCase()}
-              </button>
-            ))}
+            {["waiting", "in_progress", "completed", "invoiced", "paid"].map(
+              (s) => (
+                <button
+                  key={s}
+                  className={[
+                    "rounded-xl px-3 py-2 text-xs font-semibold ui-hover ui-focus tap-feedback",
+                    row.status === s
+                      ? "bg-brand-600 text-white"
+                      : "border border-slate-200 bg-white hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800",
+                  ].join(" ")}
+                  onClick={() => onSetStatus?.(s)}
+                  type="button"
+                >
+                  {s.replace("_", " ").toUpperCase()}
+                </button>
+              )
+            )}
           </div>
           <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
             Mark <b>COMPLETED</b> to allow Costs payment later.
           </div>
         </div>
 
+        {/* Proposals */}
+        <div className="card p-4 md:col-span-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              Proposals
+            </div>
+            <div className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+              {relatedProposals.length}
+            </div>
+          </div>
+
+          {relatedProposals.length === 0 ? (
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold">No proposals saved yet.</div>
+              <button
+                className="btn-primary"
+                onClick={() => onGoToProposals?.(row.id)}
+                type="button"
+              >
+                Create Proposal
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {relatedProposals.slice(0, 5).map((p) => (
+                <div
+                  key={p.id}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-800"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold truncate">
+                      {p.client} • {p.trade}
+                    </div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      Created:{" "}
+                      {p.createdAt ? new Date(p.createdAt).toLocaleString() : "—"}
+                    </div>
+                  </div>
+
+                  <button
+                    className="btn-ghost px-3 py-2 text-xs"
+                    onClick={() => onGoToProposals?.(row.id)}
+                    type="button"
+                  >
+                    View
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Files */}
+        <div className="card p-4 md:col-span-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs text-slate-500 dark:text-slate-400">Files</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400 tabular-nums">
+              {relatedFiles.length}
+            </div>
+          </div>
+
+          {relatedFiles.length === 0 ? (
+            <div className="mt-2 flex items-center justify-between gap-3">
+              <div className="text-sm font-semibold">No files attached yet.</div>
+              <button
+                className="btn-primary inline-flex items-center gap-2"
+                onClick={() => onGoToFiles?.(row.id)}
+                type="button"
+              >
+                <FolderOpen size={16} />
+                Upload Files
+              </button>
+            </div>
+          ) : (
+            <div className="mt-3 space-y-2">
+              {relatedFiles.slice(0, 5).map((f) => (
+                <div
+                  key={f.id}
+                  className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 p-3 dark:border-slate-800"
+                >
+                  <div className="min-w-0">
+                    <div className="text-sm font-semibold truncate">{f.name}</div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      {f.type || "—"} •{" "}
+                      {f.createdAt ? new Date(f.createdAt).toLocaleString() : "—"}
+                    </div>
+                  </div>
+
+                  <button
+                    className="btn-ghost px-3 py-2 text-xs"
+                    onClick={() => onGoToFiles?.(row.id)}
+                    type="button"
+                  >
+                    View
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         <div className="md:col-span-2 flex justify-end">
-          <button onClick={onClose} className="btn-ghost px-4 py-2.5">
+          <button onClick={onClose} className="btn-ghost px-4 py-2.5" type="button">
             Close
           </button>
         </div>

@@ -1,4 +1,4 @@
-import { clearAuthed } from "../app/routes"; 
+import { clearAuthed } from "../app/routes";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import {
   LayoutDashboard,
@@ -10,61 +10,160 @@ import {
   CalendarDays,
   X,
   LogOut,
+  AlertTriangle,
 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 
+const WO_STORAGE_KEY = "gmn_workorders_v1";
 
+/**
+ * IMPORTANT:
+ * Your codebase has BOTH "/work-orders" and "/workorders" usage.
+ * Until you standardize, we support both.
+ */
 const nav = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
-  { to: "/work-orders", label: "Work Orders", icon: ClipboardList },
+
+  // canonical route for sidebar links (pick one; we keep this)
+  { to: "/work-orders", aliases: ["/workorders"], label: "Work Orders", icon: ClipboardList },
+
   { to: "/technicians", label: "Technicians", icon: Users },
   { to: "/costs", label: "Costs", icon: DollarSign },
   { to: "/proposals", label: "Proposals", icon: FileText },
   { to: "/files", label: "Files", icon: Folder },
+
   { to: "/calendar", label: "Calendar", icon: CalendarDays },
 ];
 
 // ✅ Optional security toggle: wipe local data on logout
-// Set to true if you want a “high security” logout that clears ALL saved app data.
 const CLEAR_APP_DATA_ON_LOGOUT = false;
+
+function safeParse(raw, fallback) {
+  try {
+    const v = raw ? JSON.parse(raw) : fallback;
+    return v ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function loadWorkOrders() {
+  const parsed = safeParse(localStorage.getItem(WO_STORAGE_KEY), []);
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function sameLocalDay(a, b) {
+  return (
+    a.getFullYear() === b.getFullYear() &&
+    a.getMonth() === b.getMonth() &&
+    a.getDate() === b.getDate()
+  );
+}
+
+function countEtaBuckets(rows) {
+  const now = new Date();
+  let overdue = 0;
+  let today = 0;
+
+  for (const r of rows) {
+    if (!r) continue;
+
+    const active = r.status === "waiting" || r.status === "in_progress";
+    if (!active) continue;
+
+    if (!r.etaAt) continue;
+    const d = new Date(r.etaAt);
+    if (Number.isNaN(d.getTime())) continue;
+
+    if (d.getTime() < now.getTime()) overdue += 1;
+    else if (sameLocalDay(d, now)) today += 1;
+  }
+
+  return { overdue, today };
+}
 
 function isRouteActive(pathname, item) {
   // Dashboard must match exactly "/"
   if (item.end) return pathname === "/";
 
-  // For non-end routes, allow nested paths:
-  // "/work-orders" active for "/work-orders/123"
-  return pathname === item.to || pathname.startsWith(item.to + "/");
+  // direct match or nested
+  if (pathname === item.to || pathname.startsWith(item.to + "/")) return true;
+
+  // alias match
+  const aliases = item.aliases || [];
+  for (const a of aliases) {
+    if (pathname === a || pathname.startsWith(a + "/")) return true;
+  }
+
+  return false;
+}
+
+function Badge({ tone = "slate", children, title }) {
+  const tones = {
+    slate:
+      "bg-slate-50 text-slate-700 ring-slate-200 dark:bg-slate-900/40 dark:text-slate-200 dark:ring-slate-800",
+    amber:
+      "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-200 dark:ring-amber-900/40",
+    rose:
+      "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-900/25 dark:text-rose-200 dark:ring-rose-900/40",
+  };
+
+  return (
+    <span
+      title={title}
+      className={[
+        "inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-bold ring-1 ring-inset whitespace-nowrap",
+        tones[tone] || tones.slate,
+      ].join(" ")}
+    >
+      {children}
+    </span>
+  );
 }
 
 export default function Sidebar({ open, onClose }) {
   const location = useLocation();
   const navigate = useNavigate();
 
+  // refresh ETA counts when tab refocuses (other pages may edit localStorage)
+  const [focusKey, setFocusKey] = useState(0);
+  useEffect(() => {
+    const onFocus = () => setFocusKey((k) => k + 1);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
+  const etaCounts = useMemo(() => {
+    const rows = loadWorkOrders();
+    return countEtaBuckets(rows);
+  }, [focusKey]);
+
   function closeOnMobile() {
     if (window.innerWidth < 1024) onClose?.();
   }
 
   function handleLogout() {
-    // Always remove auth flag
-// adjust relative path
-clearAuthed();
-window.location.href = "/login";
-
-    // Optional: clear all app data (high security mode)
-    if (CLEAR_APP_DATA_ON_LOGOUT) {
-      const keysToClear = [
-        "gmn_theme",
-        "gmn_workorders_v1",
-        "gmn_techs_v1",
-        "gmn_costs_v1",
-        "gmn_proposals_v1",
-        "gmn_files_v1",
-      ];
-      keysToClear.forEach((k) => localStorage.removeItem(k));
+    // remove auth flag (your routes module owns this)
+    try {
+      clearAuthed?.();
+    } catch {
+      // no-op
     }
 
-    // Use router navigation (no hard refresh)
-    navigate("/login", { replace: true });
+    if (CLEAR_APP_DATA_ON_LOGOUT) {
+      // High-security wipe: localStorage + indexedDB blobs etc.
+      // NOTE: This nukes EVERYTHING saved by the app.
+      try {
+        localStorage.clear();
+      } catch {
+        // no-op
+      }
+      // optional: attempt to clear IndexedDB (best effort)
+      // You might have an IndexedDB name in fileStore. If you do, delete it there.
+    }
+
+    // hard redirect to kill SPA state
+    window.location.href = "/login";
   }
 
   return (
@@ -87,9 +186,7 @@ window.location.href = "/login";
             </div>
 
             <div className="min-w-0">
-              <div className="text-lg font-extrabold tracking-wide leading-5">
-                GMN
-              </div>
+              <div className="text-lg font-extrabold tracking-wide leading-5">GMN</div>
               <div className="text-[10px] text-slate-500 dark:text-slate-400 tracking-[0.25em] truncate">
                 FIELD SERVICE MANAGER
               </div>
@@ -101,6 +198,7 @@ window.location.href = "/login";
           className="lg:hidden rounded-xl border border-slate-200 dark:border-slate-700 p-2 hover:bg-slate-50 dark:hover:bg-slate-800 ui-hover ui-focus"
           onClick={onClose}
           aria-label="Close sidebar"
+          type="button"
         >
           <X size={18} />
         </button>
@@ -117,6 +215,8 @@ window.location.href = "/login";
             const Icon = item.icon;
             const current = isRouteActive(location.pathname, item);
 
+            const isCalendar = item.to === "/calendar";
+
             return (
               <li key={item.to}>
                 <NavLink
@@ -125,7 +225,6 @@ window.location.href = "/login";
                   onClick={() => closeOnMobile()}
                   aria-current={current ? "page" : undefined}
                   className={({ isActive }) => {
-                    // prefer our matcher because it supports nested routes
                     const active = current || isActive;
 
                     return [
@@ -150,14 +249,56 @@ window.location.href = "/login";
                   <Icon size={18} className="opacity-90 group-hover:opacity-100" />
                   <span className="truncate">{item.label}</span>
 
-                  {/* Tiny active dot */}
-                  <span
-                    className={[
-                      "ml-auto h-2 w-2 rounded-full transition-opacity",
-                      current ? "opacity-100 bg-brand-600 dark:bg-brand-400" : "opacity-0",
-                    ].join(" ")}
-                    aria-hidden="true"
-                  />
+                  {/* Calendar signal badges */}
+                  {isCalendar ? (
+                    <span className="ml-auto flex items-center gap-1">
+                      {etaCounts.overdue > 0 ? (
+                        <button
+                          type="button"
+                          className="ui-hover ui-focus"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            closeOnMobile();
+                            navigate("/calendar", { state: { bucket: "overdue" } });
+                          }}
+                          title="Overdue active work orders"
+                        >
+                          <Badge tone="rose" title="Overdue active work orders">
+                            <AlertTriangle size={12} />
+                            {etaCounts.overdue}
+                          </Badge>
+                        </button>
+                      ) : null}
+
+                      {etaCounts.today > 0 ? (
+                        <button
+                          type="button"
+                          className="ui-hover ui-focus"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            closeOnMobile();
+                            navigate("/calendar", { state: { bucket: "today" } });
+                          }}
+                          title="Today’s active work orders"
+                        >
+                          <Badge tone="amber" title="Today’s active work orders">
+                            Today {etaCounts.today}
+                          </Badge>
+                        </button>
+                      ) : null}
+                    </span>
+                  ) : (
+                    /* Tiny active dot for non-calendar */
+                    <span
+                      className={[
+                        "ml-auto h-2 w-2 rounded-full transition-opacity",
+                        current ? "opacity-100 bg-brand-600 dark:bg-brand-400" : "opacity-0",
+                      ].join(" ")}
+                      aria-hidden="true"
+                    />
+                  )}
                 </NavLink>
               </li>
             );
@@ -179,6 +320,7 @@ window.location.href = "/login";
             onClick={handleLogout}
             className="inline-flex items-center gap-2 rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-800 ui-hover ui-focus tap-feedback"
             aria-label="Logout"
+            type="button"
           >
             <LogOut size={16} />
             Logout

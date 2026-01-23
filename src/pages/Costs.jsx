@@ -69,8 +69,6 @@ function Badge({ tone = "slate", children, title }) {
       "bg-brand-50 text-brand-700 ring-brand-200 dark:bg-brand-600/15 dark:text-brand-100 dark:ring-brand-600/30",
     emerald:
       "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-200 dark:ring-emerald-900/40",
-    rose:
-      "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-900/25 dark:text-rose-200 dark:ring-rose-900/40",
   };
 
   return (
@@ -101,20 +99,24 @@ function formatStamp(iso) {
  * - WO.status === "completed"
  * - WO has assigned technicianId
  * - technician exists in Tech List AND is not blacklisted
- *
- * Security additions:
  * ✅ Prevent duplicate open requests for same WO (requested/approved)
  * ✅ Confirm before APPROVE and before PAID
  *
- * Workflow:
- * requested -> approved (AP) -> paid
+ * Workflow: requested -> approved (AP) -> paid
  */
 export default function Costs() {
   const [costs, setCosts] = useState(() => loadCosts());
   const [open, setOpen] = useState(false);
 
-  const workOrders = useMemo(() => loadWorkOrders(), []);
-  const techs = useMemo(() => loadTechs(), []);
+  const [refreshKey, setRefreshKey] = useState(0);
+  useEffect(() => {
+    const onFocus = () => setRefreshKey((k) => k + 1);
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, []);
+
+  const workOrders = useMemo(() => loadWorkOrders(), [refreshKey]);
+  const techs = useMemo(() => loadTechs(), [refreshKey]);
 
   useEffect(() => {
     saveCosts(costs);
@@ -148,7 +150,6 @@ export default function Costs() {
   }, [costs]);
 
   function hasOpenRequestForWO(woId) {
-    // High-security rule: only ONE open (requested/approved) at a time per WO
     return costs.some(
       (c) => c.woId === woId && (c.status === "requested" || c.status === "approved")
     );
@@ -156,40 +157,30 @@ export default function Costs() {
 
   function createCostRequest(form) {
     const wo = workOrders.find((w) => w.id === form.woId);
-    if (!wo) {
-      alert("Work Order not found.");
-      return;
-    }
+    if (!wo) return alert("Work Order not found.");
 
     if (wo.status !== "completed") {
-      alert("You can only request payment when the Work Order is COMPLETED.");
-      return;
+      return alert("You can only request payment when the Work Order is COMPLETED.");
     }
 
     if (!wo.technicianId) {
-      alert("This Work Order has no assigned technician.");
-      Attachment;
-      return;
+      return alert("This Work Order has no assigned technician.");
     }
 
     const tech = techById.get(wo.technicianId);
     if (!tech || tech.blacklisted) {
-      alert("Assigned technician is not valid (missing or blacklisted).");
-      return;
+      return alert("Assigned technician is not valid (missing or blacklisted).");
     }
 
     const amount = Number(form.amount);
     if (!Number.isFinite(amount) || amount <= 0) {
-      alert("Amount must be a valid number greater than 0.");
-      return;
+      return alert("Amount must be a valid number greater than 0.");
     }
 
-    // ✅ High-security improvement: prevent duplicates
     if (hasOpenRequestForWO(wo.id)) {
-      alert(
-        "A payment request already exists for this Work Order (Requested or Approved). Please complete it (Paid) or revert/correct the existing request."
+      return alert(
+        "A payment request already exists for this Work Order (Requested or Approved). Complete it (Paid) or revert/correct the existing request."
       );
-      return;
     }
 
     const item = {
@@ -200,7 +191,7 @@ export default function Costs() {
       trade: wo.trade,
       technicianId: tech.id,
       technicianName: tech.name,
-      status: "requested", // AP workflow starts here
+      status: "requested",
       amount,
       note: String(form.note || ""),
       requestedAt: new Date().toISOString(),
@@ -227,8 +218,6 @@ export default function Costs() {
         }
 
         if (next === "requested") {
-          // Allow revert for corrections (optional)
-          // Security note: This does NOT allow reverting from paid.
           if (c.status === "paid") return c;
           return { ...c, status: "requested", approvedAt: "", paidAt: "" };
         }
@@ -245,7 +234,7 @@ export default function Costs() {
           title="Costs"
           subtitle="Payments are requested to AP first. Payments can only be made for COMPLETED work orders, to the assigned technician from the Tech List."
           actions={
-            <button className="btn-primary" onClick={() => setOpen(true)}>
+            <button className="btn-primary" onClick={() => setOpen(true)} type="button">
               + Request Payment
             </button>
           }
@@ -363,7 +352,7 @@ export default function Costs() {
                                 if (!ok) return;
                                 setCostStatus(c.id, "approved");
                               }}
-                              title="AP approves the request"
+                              type="button"
                             >
                               Approve (AP)
                             </button>
@@ -379,7 +368,7 @@ export default function Costs() {
                                 if (!ok) return;
                                 setCostStatus(c.id, "paid");
                               }}
-                              title="Mark as paid to technician"
+                              type="button"
                             >
                               Mark Paid
                             </button>
@@ -395,7 +384,7 @@ export default function Costs() {
                                 if (!ok) return;
                                 setCostStatus(c.id, "requested");
                               }}
-                              title="Revert for correction"
+                              type="button"
                             >
                               Revert
                             </button>
@@ -413,7 +402,7 @@ export default function Costs() {
                       <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
                         You can only request payment for a COMPLETED Work Order with an assigned technician.
                       </div>
-                      <button className="mt-4 btn-primary" onClick={() => setOpen(true)}>
+                      <button className="mt-4 btn-primary" onClick={() => setOpen(true)} type="button">
                         + Request Payment
                       </button>
                     </td>
@@ -460,7 +449,6 @@ function RequestPaymentModal({ open, onClose, eligibleWOs, hasOpenRequestForWO, 
   const amountOk = Number.isFinite(amountNum) && amountNum > 0;
 
   const duplicateOpen = selectedWO ? hasOpenRequestForWO(selectedWO.id) : false;
-
   const canSubmit = !!selectedWO && amountOk && !duplicateOpen;
 
   return (
@@ -507,7 +495,7 @@ function RequestPaymentModal({ open, onClose, eligibleWOs, hasOpenRequestForWO, 
 
             {duplicateOpen ? (
               <div className="mt-2 text-xs text-rose-600 dark:text-rose-300">
-                A payment request already exists for this Work Order (Requested/Approved). You must complete it (Paid) or revert/correct the existing request.
+                A payment request already exists for this Work Order (Requested/Approved). Complete it (Paid) or revert/correct the existing request.
               </div>
             ) : (
               <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
@@ -548,7 +536,7 @@ function RequestPaymentModal({ open, onClose, eligibleWOs, hasOpenRequestForWO, 
         </div>
 
         <div className="flex items-center justify-between gap-2">
-          <button onClick={onClose} className="btn-ghost px-4 py-2.5">
+          <button onClick={onClose} className="btn-ghost px-4 py-2.5" type="button">
             Cancel
           </button>
 
@@ -558,6 +546,7 @@ function RequestPaymentModal({ open, onClose, eligibleWOs, hasOpenRequestForWO, 
               "btn-primary",
               !canSubmit ? "opacity-60 cursor-not-allowed" : "",
             ].join(" ")}
+            type="button"
             onClick={() => {
               const ok = confirm(
                 `Submit payment request to AP?\n\nWO: ${selectedWO?.wo}\nTech: ${selectedWO?.technicianName}\nAmount: ${money(amountNum)}`

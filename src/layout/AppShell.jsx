@@ -1,19 +1,24 @@
 import { Outlet, useLocation } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import Topbar from "./Topbar";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export default function AppShell() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const location = useLocation();
 
-  // ✅ Theme: load + validate
+  // Prevent double theme ownership:
+  // AppShell applies the stored theme ONCE (initial mount).
+  // Topbar owns toggling + cross-tab sync.
+  const didInitTheme = useRef(false);
   useEffect(() => {
-    const saved = localStorage.getItem("gmn_theme");
-    const next = saved === "dark" ? "dark" : "light";
+    if (didInitTheme.current) return;
+    didInitTheme.current = true;
 
-    if (next === "dark") document.documentElement.classList.add("dark");
-    else document.documentElement.classList.remove("dark");
+    const saved = localStorage.getItem("gmn_theme");
+    const isDark = saved === "dark";
+
+    document.documentElement.classList.toggle("dark", isDark);
   }, []);
 
   // ✅ Security/UX: close sidebar on route change (prevents weird overlay states)
@@ -27,7 +32,10 @@ export default function AppShell() {
       document.body.style.overflow = "";
       return;
     }
+
+    // lock
     document.body.style.overflow = "hidden";
+
     return () => {
       document.body.style.overflow = "";
     };
@@ -47,13 +55,14 @@ export default function AppShell() {
       <Sidebar open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       {/* mobile overlay */}
-      {sidebarOpen && (
+      {sidebarOpen ? (
         <button
+          type="button"
           className="fixed inset-0 z-30 bg-black/50 lg:hidden"
           onClick={() => setSidebarOpen(false)}
           aria-label="Close sidebar overlay"
         />
-      )}
+      ) : null}
 
       <div className="lg:pl-72">
         <Topbar onOpenSidebar={() => setSidebarOpen(true)} />
