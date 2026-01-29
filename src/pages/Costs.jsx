@@ -1,564 +1,334 @@
-import { useEffect, useMemo, useState } from "react";
-import PageHeader from "../components/PageHeader";
+import { useEffect, useState, useCallback } from "react";
+import { Plus, Search, DollarSign, ChevronDown, CheckCircle, Clock, CreditCard, AlertCircle } from "lucide-react";
 import PageTransition from "../components/PageTransition";
+import PageHeader from "../components/PageHeader";
 import Modal from "../components/Modal";
+import { PageLoader } from "../components/LoadingSpinner";
+import ErrorMessage, { InlineError } from "../components/ErrorMessage";
+import EmptyState from "../components/EmptyState";
+import { costsApi, workOrdersApi, techniciansApi } from "../api";
 
-const WO_STORAGE_KEY = "gmn_workorders_v1";
-const TECH_STORAGE_KEY = "gmn_techs_v1";
-const COSTS_STORAGE_KEY = "gmn_costs_v1";
+const STATUS_OPTIONS = [
+  { value: "all", label: "All Status" },
+  { value: "requested", label: "Requested" },
+  { value: "approved", label: "Approved" },
+  { value: "paid", label: "Paid" },
+];
 
-function uid() {
-  return crypto?.randomUUID ? crypto.randomUUID() : String(Date.now());
-}
+const STATUS_CONFIG = {
+  requested: { label: "Requested", color: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400", icon: Clock },
+  approved: { label: "Approved", color: "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400", icon: CheckCircle },
+  paid: { label: "Paid", color: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400", icon: CreditCard },
+};
 
-function money(n) {
-  const num = Number(n || 0);
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: "USD",
-    maximumFractionDigits: 2,
-  }).format(num);
-}
-
-function safeParseJSON(raw, fallback) {
-  try {
-    const parsed = raw ? JSON.parse(raw) : fallback;
-    return parsed ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function loadWorkOrders() {
-  const parsed = safeParseJSON(localStorage.getItem(WO_STORAGE_KEY), []);
-  return Array.isArray(parsed) ? parsed : [];
-}
-
-function loadTechs() {
-  const parsed = safeParseJSON(localStorage.getItem(TECH_STORAGE_KEY), []);
-  return Array.isArray(parsed) ? parsed : [];
-}
-
-function loadCosts() {
-  const parsed = safeParseJSON(localStorage.getItem(COSTS_STORAGE_KEY), []);
-  return Array.isArray(parsed) ? parsed : [];
-}
-
-function saveCosts(list) {
-  localStorage.setItem(COSTS_STORAGE_KEY, JSON.stringify(list));
-}
-
-function Field({ label, children }) {
-  return (
-    <label className="block">
-      <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-        {label}
-      </div>
-      <div className="mt-1">{children}</div>
-    </label>
-  );
-}
-
-function Badge({ tone = "slate", children, title }) {
-  const tones = {
-    slate:
-      "bg-slate-50 text-slate-700 ring-slate-200 dark:bg-slate-900/40 dark:text-slate-200 dark:ring-slate-800",
-    amber:
-      "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-200 dark:ring-amber-900/40",
-    brand:
-      "bg-brand-50 text-brand-700 ring-brand-200 dark:bg-brand-600/15 dark:text-brand-100 dark:ring-brand-600/30",
-    emerald:
-      "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-200 dark:ring-emerald-900/40",
-  };
-
-  return (
-    <span
-      title={title}
-      className={[
-        "inline-flex items-center rounded-full px-2.5 py-1 text-[11px] font-semibold ring-1 ring-inset whitespace-nowrap",
-        tones[tone] || tones.slate,
-      ].join(" ")}
-    >
-      {children}
-    </span>
-  );
-}
-
-function formatStamp(iso) {
-  if (!iso) return "";
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return "";
-  }
-}
-
-/**
- * STRICT RULES (frontend enforced):
- * ✅ You can only create a Cost request for a WO if:
- * - WO.status === "completed"
- * - WO has assigned technicianId
- * - technician exists in Tech List AND is not blacklisted
- * ✅ Prevent duplicate open requests for same WO (requested/approved)
- * ✅ Confirm before APPROVE and before PAID
- *
- * Workflow: requested -> approved (AP) -> paid
- */
 export default function Costs() {
-  const [costs, setCosts] = useState(() => loadCosts());
-  const [open, setOpen] = useState(false);
+  const [costs, setCosts] = useState([]);
+  const [workOrders, setWorkOrders] = useState([]);
+  const [technicians, setTechnicians] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [modalOpen, setModalOpen] = useState(false);
+  const [formError, setFormError] = useState(null);
+  const [saving, setSaving] = useState(false);
 
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [form, setForm] = useState({ workOrderId: "", technicianId: "", amount: "", note: "" });
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [costsRes, woRes, techRes] = await Promise.all([
+        costsApi.getAll({ limit: 100, status: statusFilter !== "all" ? statusFilter : undefined }),
+        workOrdersApi.getAll({ limit: 100, status: "completed" }),
+        techniciansApi.getAll({ limit: 100 }),
+      ]);
+      setCosts(costsRes.data || []);
+      setWorkOrders(woRes.data || []);
+      setTechnicians(techRes.data || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [statusFilter]);
+
   useEffect(() => {
-    const onFocus = () => setRefreshKey((k) => k + 1);
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, []);
+    loadData();
+  }, [loadData]);
 
-  const workOrders = useMemo(() => loadWorkOrders(), [refreshKey]);
-  const techs = useMemo(() => loadTechs(), [refreshKey]);
-
-  useEffect(() => {
-    saveCosts(costs);
-  }, [costs]);
-
-  const techById = useMemo(() => {
-    const m = new Map();
-    for (const t of techs) m.set(t.id, t);
-    return m;
-  }, [techs]);
-
-  const eligibleWOs = useMemo(() => {
-    return workOrders.filter((w) => {
-      if (w.status !== "completed") return false;
-      if (!w.technicianId) return false;
-
-      const tech = techById.get(w.technicianId);
-      if (!tech) return false;
-      if (tech.blacklisted) return false;
-
-      return true;
-    });
-  }, [workOrders, techById]);
-
-  const counts = useMemo(() => {
-    const total = costs.length;
-    const requested = costs.filter((c) => c.status === "requested").length;
-    const approved = costs.filter((c) => c.status === "approved").length;
-    const paid = costs.filter((c) => c.status === "paid").length;
-    return { total, requested, approved, paid };
-  }, [costs]);
-
-  function hasOpenRequestForWO(woId) {
-    return costs.some(
-      (c) => c.woId === woId && (c.status === "requested" || c.status === "approved")
-    );
+  function openCreate() {
+    setForm({ workOrderId: "", technicianId: "", amount: "", note: "" });
+    setFormError(null);
+    setModalOpen(true);
   }
 
-  function createCostRequest(form) {
-    const wo = workOrders.find((w) => w.id === form.woId);
-    if (!wo) return alert("Work Order not found.");
-
-    if (wo.status !== "completed") {
-      return alert("You can only request payment when the Work Order is COMPLETED.");
+  async function handleSave(e) {
+    e.preventDefault();
+    if (!form.workOrderId || !form.technicianId || !form.amount) {
+      setFormError("Work order, technician, and amount are required");
+      return;
     }
 
-    if (!wo.technicianId) {
-      return alert("This Work Order has no assigned technician.");
+    setSaving(true);
+    setFormError(null);
+    try {
+      await costsApi.create({
+        workOrderId: form.workOrderId,
+        technicianId: form.technicianId,
+        amount: parseFloat(form.amount),
+        note: form.note,
+      });
+      setModalOpen(false);
+      loadData();
+    } catch (err) {
+      setFormError(err.message);
+    } finally {
+      setSaving(false);
     }
-
-    const tech = techById.get(wo.technicianId);
-    if (!tech || tech.blacklisted) {
-      return alert("Assigned technician is not valid (missing or blacklisted).");
-    }
-
-    const amount = Number(form.amount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return alert("Amount must be a valid number greater than 0.");
-    }
-
-    if (hasOpenRequestForWO(wo.id)) {
-      return alert(
-        "A payment request already exists for this Work Order (Requested or Approved). Complete it (Paid) or revert/correct the existing request."
-      );
-    }
-
-    const item = {
-      id: uid(),
-      woId: wo.id,
-      wo: wo.wo,
-      client: wo.client,
-      trade: wo.trade,
-      technicianId: tech.id,
-      technicianName: tech.name,
-      status: "requested",
-      amount,
-      note: String(form.note || ""),
-      requestedAt: new Date().toISOString(),
-      approvedAt: "",
-      paidAt: "",
-    };
-
-    setCosts((prev) => [item, ...prev]);
   }
 
-  function setCostStatus(id, next) {
-    setCosts((prev) =>
-      prev.map((c) => {
-        if (c.id !== id) return c;
-
-        if (next === "approved") {
-          if (c.status !== "requested") return c;
-          return { ...c, status: "approved", approvedAt: new Date().toISOString() };
-        }
-
-        if (next === "paid") {
-          if (c.status !== "approved") return c;
-          return { ...c, status: "paid", paidAt: new Date().toISOString() };
-        }
-
-        if (next === "requested") {
-          if (c.status === "paid") return c;
-          return { ...c, status: "requested", approvedAt: "", paidAt: "" };
-        }
-
-        return c;
-      })
-    );
+  async function updateStatus(cost, newStatus) {
+    try {
+      await costsApi.update(cost.id, { status: newStatus });
+      loadData();
+    } catch (err) {
+      alert(err.message);
+    }
   }
+
+  // Filter by search
+  const filteredCosts = search
+    ? costs.filter(c => 
+        c.workOrder?.woNumber?.toLowerCase().includes(search.toLowerCase()) ||
+        c.workOrder?.client?.toLowerCase().includes(search.toLowerCase()) ||
+        c.technician?.name?.toLowerCase().includes(search.toLowerCase())
+      )
+    : costs;
+
+  // Calculate totals
+  const totalRequested = costs.filter(c => c.status === "requested").reduce((sum, c) => sum + c.amount, 0);
+  const totalApproved = costs.filter(c => c.status === "approved").reduce((sum, c) => sum + c.amount, 0);
+  const totalPaid = costs.filter(c => c.status === "paid").reduce((sum, c) => sum + c.amount, 0);
+
+  if (loading) return <PageLoader message="Loading costs..." />;
 
   return (
     <PageTransition>
-      <div className="space-y-5">
-        <PageHeader
-          title="Costs"
-          subtitle="Payments are requested to AP first. Payments can only be made for COMPLETED work orders, to the assigned technician from the Tech List."
-          actions={
-            <button className="btn-primary" onClick={() => setOpen(true)} type="button">
-              + Request Payment
-            </button>
-          }
-        />
+      <PageHeader
+        title="Costs"
+        icon={DollarSign}
+        subtitle="Manage technician payments and costs"
+        actions={
+          <button onClick={openCreate} className="btn-primary flex items-center gap-2">
+            <Plus size={18} /> Request Payment
+          </button>
+        }
+      />
 
-        {/* Summary chips */}
-        <div className="flex flex-wrap gap-2">
-          <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
-            Total: <span className="ml-1 tabular-nums">{counts.total}</span>
-          </span>
-          <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-200">
-            Requested: <span className="ml-1 tabular-nums">{counts.requested}</span>
-          </span>
-          <span className="inline-flex items-center rounded-full border border-brand-200 bg-brand-50 px-3 py-1 text-xs font-semibold text-brand-700 dark:border-brand-600/30 dark:bg-brand-600/15 dark:text-brand-100">
-            Approved (AP): <span className="ml-1 tabular-nums">{counts.approved}</span>
-          </span>
-          <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-200">
-            Paid: <span className="ml-1 tabular-nums">{counts.paid}</span>
-          </span>
-        </div>
+      {error && <ErrorMessage error={error} onRetry={loadData} className="mb-6" />}
 
-        {/* Table */}
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
+      {/* Summary Cards */}
+      <div className="grid gap-4 sm:grid-cols-3 mb-6">
+        <div className="card p-4 bg-gradient-to-r from-amber-50 to-orange-50 dark:from-amber-900/20 dark:to-orange-900/20 border-amber-200 dark:border-amber-800">
+          <div className="flex items-center gap-3">
+            <Clock className="text-amber-600 dark:text-amber-400" size={24} />
             <div>
-              <div className="text-sm font-bold">Payment Requests</div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">
-                Requested → Approved (AP) → Paid
-              </div>
+              <p className="text-sm text-amber-700 dark:text-amber-300">Requested</p>
+              <p className="text-xl font-bold text-amber-800 dark:text-amber-200">${totalRequested.toLocaleString()}</p>
             </div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              {costs.length} items
-            </div>
-          </div>
-
-          <div className="overflow-auto gmn-scroll">
-            <table className="min-w-full text-sm">
-              <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 dark:bg-slate-950 dark:text-slate-300 dark:border-slate-800">
-                <tr>
-                  <th className="px-4 py-3 text-left font-semibold">WO#</th>
-                  <th className="px-4 py-3 text-left font-semibold">Client</th>
-                  <th className="px-4 py-3 text-left font-semibold">Technician</th>
-                  <th className="px-4 py-3 text-left font-semibold">Amount</th>
-                  <th className="px-4 py-3 text-left font-semibold">Status</th>
-                  <th className="px-4 py-3 text-right font-semibold">Actions</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {costs.map((c, idx) => {
-                  const stampTitle = [
-                    c.requestedAt ? `Requested: ${formatStamp(c.requestedAt)}` : "",
-                    c.approvedAt ? `Approved: ${formatStamp(c.approvedAt)}` : "",
-                    c.paidAt ? `Paid: ${formatStamp(c.paidAt)}` : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" • ");
-
-                  return (
-                    <tr
-                      key={c.id}
-                      className={[
-                        "group border-t border-slate-100 dark:border-slate-800/70",
-                        idx % 2 === 0
-                          ? "bg-white dark:bg-slate-900"
-                          : "bg-slate-50/30 dark:bg-slate-900/60",
-                        "hover:bg-brand-50/40 dark:hover:bg-brand-600/10",
-                        "transition-colors",
-                      ].join(" ")}
-                    >
-                      <td className="px-4 py-3 font-semibold">{c.wo}</td>
-                      <td className="px-4 py-3">
-                        <div className="font-medium">{c.client}</div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400">
-                          {c.trade}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="font-semibold">{c.technicianName}</div>
-                        <div className="text-xs text-slate-500 dark:text-slate-400">
-                          from Tech List
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 tabular-nums">{money(c.amount)}</td>
-                      <td className="px-4 py-3">
-                        {c.status === "requested" ? (
-                          <Badge tone="amber" title={stampTitle}>
-                            Requested
-                          </Badge>
-                        ) : c.status === "approved" ? (
-                          <Badge tone="brand" title={stampTitle}>
-                            Approved (AP)
-                          </Badge>
-                        ) : (
-                          <Badge tone="emerald" title={stampTitle}>
-                            Paid
-                          </Badge>
-                        )}
-                        {c.note ? (
-                          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400 max-w-[280px] truncate">
-                            {c.note}
-                          </div>
-                        ) : null}
-                      </td>
-
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex justify-end gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                          {c.status === "requested" ? (
-                            <button
-                              className="btn-primary px-3 py-1.5 text-xs"
-                              onClick={() => {
-                                const ok = confirm(
-                                  `Approve this payment request (AP)?\n\nWO: ${c.wo}\nTech: ${c.technicianName}\nAmount: ${money(c.amount)}`
-                                );
-                                if (!ok) return;
-                                setCostStatus(c.id, "approved");
-                              }}
-                              type="button"
-                            >
-                              Approve (AP)
-                            </button>
-                          ) : null}
-
-                          {c.status === "approved" ? (
-                            <button
-                              className="rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 dark:bg-white dark:text-slate-900 ui-hover ui-focus tap-feedback"
-                              onClick={() => {
-                                const ok = confirm(
-                                  `Mark this payment as PAID?\n\nWO: ${c.wo}\nTech: ${c.technicianName}\nAmount: ${money(c.amount)}\n\nThis cannot be undone.`
-                                );
-                                if (!ok) return;
-                                setCostStatus(c.id, "paid");
-                              }}
-                              type="button"
-                            >
-                              Mark Paid
-                            </button>
-                          ) : null}
-
-                          {c.status !== "paid" ? (
-                            <button
-                              className="btn-ghost px-3 py-1.5 text-xs"
-                              onClick={() => {
-                                const ok = confirm(
-                                  "Revert this request back to REQUESTED for correction?\n\n(Approved/Paid timestamps will be cleared.)"
-                                );
-                                if (!ok) return;
-                                setCostStatus(c.id, "requested");
-                              }}
-                              type="button"
-                            >
-                              Revert
-                            </button>
-                          ) : null}
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-
-                {costs.length === 0 ? (
-                  <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center">
-                      <div className="text-sm font-semibold">No payment requests yet</div>
-                      <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                        You can only request payment for a COMPLETED Work Order with an assigned technician.
-                      </div>
-                      <button className="mt-4 btn-primary" onClick={() => setOpen(true)} type="button">
-                        + Request Payment
-                      </button>
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
           </div>
         </div>
-
-        <RequestPaymentModal
-          open={open}
-          onClose={() => setOpen(false)}
-          eligibleWOs={eligibleWOs}
-          hasOpenRequestForWO={hasOpenRequestForWO}
-          onCreate={(form) => {
-            createCostRequest(form);
-            setOpen(false);
-          }}
-        />
-      </div>
-    </PageTransition>
-  );
-}
-
-function RequestPaymentModal({ open, onClose, eligibleWOs, hasOpenRequestForWO, onCreate }) {
-  const [form, setForm] = useState({
-    woId: "",
-    amount: "",
-    note: "",
-  });
-
-  useEffect(() => {
-    if (!open) return;
-    setForm({ woId: "", amount: "", note: "" });
-  }, [open]);
-
-  const selectedWO = useMemo(
-    () => eligibleWOs.find((w) => w.id === form.woId) || null,
-    [eligibleWOs, form.woId]
-  );
-
-  const amountNum = Number(form.amount);
-  const amountOk = Number.isFinite(amountNum) && amountNum > 0;
-
-  const duplicateOpen = selectedWO ? hasOpenRequestForWO(selectedWO.id) : false;
-  const canSubmit = !!selectedWO && amountOk && !duplicateOpen;
-
-  return (
-    <Modal
-      open={open}
-      title="Request Payment (Costs)"
-      subtitle="This creates an AP request. Payment can only be requested for completed work orders with an assigned, valid technician."
-      onClose={onClose}
-    >
-      <div className="grid gap-4">
-        {eligibleWOs.length === 0 ? (
-          <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-200">
-            No eligible Work Orders right now.
-            <div className="mt-1 text-xs opacity-90">
-              To request payment, the WO must be <b>COMPLETED</b> and have an assigned technician from the Tech List.
+        <div className="card p-4 bg-gradient-to-r from-sky-50 to-blue-50 dark:from-sky-900/20 dark:to-blue-900/20 border-sky-200 dark:border-sky-800">
+          <div className="flex items-center gap-3">
+            <CheckCircle className="text-sky-600 dark:text-sky-400" size={24} />
+            <div>
+              <p className="text-sm text-sky-700 dark:text-sky-300">Approved</p>
+              <p className="text-xl font-bold text-sky-800 dark:text-sky-200">${totalApproved.toLocaleString()}</p>
             </div>
           </div>
-        ) : null}
+        </div>
+        <div className="card p-4 bg-gradient-to-r from-emerald-50 to-green-50 dark:from-emerald-900/20 dark:to-green-900/20 border-emerald-200 dark:border-emerald-800">
+          <div className="flex items-center gap-3">
+            <CreditCard className="text-emerald-600 dark:text-emerald-400" size={24} />
+            <div>
+              <p className="text-sm text-emerald-700 dark:text-emerald-300">Paid</p>
+              <p className="text-xl font-bold text-emerald-800 dark:text-emerald-200">${totalPaid.toLocaleString()}</p>
+            </div>
+          </div>
+        </div>
+      </div>
 
-        <Field label="Work Order (Completed + assigned tech only)">
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-4 mb-6">
+        <div className="relative flex-1">
+          <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search costs..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="input pl-11"
+          />
+        </div>
+        <div className="relative">
           <select
-            className="input"
-            value={form.woId}
-            onChange={(e) => setForm((p) => ({ ...p, woId: e.target.value }))}
-            disabled={eligibleWOs.length === 0}
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value)}
+            className="input appearance-none pr-10 min-w-[160px]"
           >
-            <option value="" disabled>
-              Select WO#
-            </option>
-            {eligibleWOs.map((w) => (
-              <option key={w.id} value={w.id}>
-                {w.wo} • {w.client} • Tech: {w.technicianName}
-              </option>
+            {STATUS_OPTIONS.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
             ))}
           </select>
-        </Field>
-
-        {selectedWO ? (
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950">
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              Paying to technician
-            </div>
-            <div className="mt-1 font-semibold">{selectedWO.technicianName}</div>
-
-            {duplicateOpen ? (
-              <div className="mt-2 text-xs text-rose-600 dark:text-rose-300">
-                A payment request already exists for this Work Order (Requested/Approved). Complete it (Paid) or revert/correct the existing request.
-              </div>
-            ) : (
-              <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                WO must remain completed. If technician changes, create a new request.
-              </div>
-            )}
-          </div>
-        ) : null}
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <Field label="Amount *">
-            <input
-              type="number"
-              min="0"
-              step="0.01"
-              className="input"
-              value={form.amount}
-              onChange={(e) => setForm((p) => ({ ...p, amount: e.target.value }))}
-              placeholder="500"
-              disabled={!selectedWO}
-            />
-            {!amountOk && String(form.amount).trim().length > 0 ? (
-              <div className="mt-1 text-[11px] text-rose-600 dark:text-rose-300">
-                Amount must be greater than 0.
-              </div>
-            ) : null}
-          </Field>
-
-          <Field label="Note (optional)">
-            <input
-              className="input"
-              value={form.note}
-              onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))}
-              placeholder="AP reference / details…"
-              disabled={!selectedWO}
-            />
-          </Field>
-        </div>
-
-        <div className="flex items-center justify-between gap-2">
-          <button onClick={onClose} className="btn-ghost px-4 py-2.5" type="button">
-            Cancel
-          </button>
-
-          <button
-            disabled={!canSubmit}
-            className={[
-              "btn-primary",
-              !canSubmit ? "opacity-60 cursor-not-allowed" : "",
-            ].join(" ")}
-            type="button"
-            onClick={() => {
-              const ok = confirm(
-                `Submit payment request to AP?\n\nWO: ${selectedWO?.wo}\nTech: ${selectedWO?.technicianName}\nAmount: ${money(amountNum)}`
-              );
-              if (!ok) return;
-              onCreate({ ...form, amount: amountNum });
-            }}
-          >
-            Submit to AP
-          </button>
+          <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
         </div>
       </div>
-    </Modal>
+
+      {/* Costs List */}
+      {filteredCosts.length === 0 ? (
+        <EmptyState
+          icon={DollarSign}
+          title="No costs found"
+          description={search || statusFilter !== "all" ? "Try adjusting your filters" : "Create your first payment request"}
+          actionLabel="Request Payment"
+          onAction={openCreate}
+        />
+      ) : (
+        <div className="space-y-4">
+          {filteredCosts.map((cost) => {
+            const config = STATUS_CONFIG[cost.status] || STATUS_CONFIG.requested;
+            const Icon = config.icon;
+            
+            return (
+              <div key={cost.id} className="card p-5">
+                <div className="flex flex-col sm:flex-row sm:items-center gap-4">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-3 mb-2">
+                      <span className="font-mono text-sm font-bold text-brand-600 dark:text-brand-400">
+                        {cost.workOrder?.woNumber}
+                      </span>
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${config.color}`}>
+                        <Icon size={12} />
+                        {config.label}
+                      </span>
+                    </div>
+                    <p className="text-sm text-slate-600 dark:text-slate-400">
+                      {cost.workOrder?.client} • {cost.technician?.name}
+                    </p>
+                    {cost.note && <p className="text-sm text-slate-500 mt-1">{cost.note}</p>}
+                  </div>
+
+                  <div className="text-right">
+                    <p className="text-2xl font-bold">${cost.amount.toLocaleString()}</p>
+                    <p className="text-xs text-slate-500">
+                      {new Date(cost.requestedAt).toLocaleDateString()}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {cost.status === "requested" && (
+                      <button
+                        onClick={() => updateStatus(cost, "approved")}
+                        className="px-3 py-2 rounded-lg bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400 text-sm font-medium hover:bg-sky-200 dark:hover:bg-sky-900/50 transition-colors"
+                      >
+                        Approve
+                      </button>
+                    )}
+                    {cost.status === "approved" && (
+                      <button
+                        onClick={() => updateStatus(cost, "paid")}
+                        className="px-3 py-2 rounded-lg bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 text-sm font-medium hover:bg-emerald-200 dark:hover:bg-emerald-900/50 transition-colors"
+                      >
+                        Mark Paid
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Create Modal */}
+      <Modal open={modalOpen} onClose={() => setModalOpen(false)} title="Request Payment" size="md">
+        <form onSubmit={handleSave} className="space-y-5">
+          {formError && <InlineError error={formError} onDismiss={() => setFormError(null)} />}
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Work Order *</label>
+            <select
+              value={form.workOrderId}
+              onChange={(e) => {
+                const wo = workOrders.find(w => w.id === e.target.value);
+                setForm({
+                  ...form,
+                  workOrderId: e.target.value,
+                  technicianId: wo?.technicianId || form.technicianId,
+                });
+              }}
+              className="input"
+              required
+            >
+              <option value="">Select work order</option>
+              {workOrders.filter(wo => wo.status === "completed").map((wo) => (
+                <option key={wo.id} value={wo.id}>{wo.woNumber} - {wo.client}</option>
+              ))}
+            </select>
+            <p className="text-xs text-slate-500 mt-1">Only completed work orders can have payment requests</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Technician *</label>
+            <select
+              value={form.technicianId}
+              onChange={(e) => setForm({ ...form, technicianId: e.target.value })}
+              className="input"
+              required
+            >
+              <option value="">Select technician</option>
+              {technicians.filter(t => !t.isBlacklisted).map((tech) => (
+                <option key={tech.id} value={tech.id}>{tech.name} - {tech.trade}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Amount ($) *</label>
+            <input
+              type="number"
+              value={form.amount}
+              onChange={(e) => setForm({ ...form, amount: e.target.value })}
+              className="input"
+              placeholder="0.00"
+              step="0.01"
+              min="0.01"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Note</label>
+            <textarea
+              value={form.note}
+              onChange={(e) => setForm({ ...form, note: e.target.value })}
+              className="input min-h-[80px]"
+              placeholder="Payment details..."
+            />
+          </div>
+
+          <div className="flex justify-end gap-3 pt-4 border-t border-slate-200 dark:border-slate-700">
+            <button type="button" onClick={() => setModalOpen(false)} className="btn-ghost">
+              Cancel
+            </button>
+            <button type="submit" disabled={saving} className="btn-primary">
+              {saving ? "Submitting..." : "Request Payment"}
+            </button>
+          </div>
+        </form>
+      </Modal>
+    </PageTransition>
   );
 }

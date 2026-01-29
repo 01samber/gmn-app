@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  # Frontend (React/Vite)
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:3001/api
+    depends_on:
+      - backend
+    volumes:
+      - ./src:/app/src
+      - ./public:/app/public
+    command: npm run dev -- --host
+
+  # Backend (Node.js/Express)
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3001"
+    environment:
+      - DATABASE_URL=file:./dev.db
+      - JWT_SECRET=gmn-super-secret-key-change-in-production
+      - JWT_EXPIRES_IN=7d
+      - PORT=3001
+      - NODE_ENV=development
+    volumes:
+      - ./server/prisma:/app/prisma
+      - ./server/uploads:/app/uploads
+      - backend_node_modules:/app/node_modules
+
+volumes:
+  backend_node_modules:

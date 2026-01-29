@@ -1,0 +1,174 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      String   @default("dispatcher")
+  avatar    String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workOrders    WorkOrder[]
+  proposals     Proposal[]
+  costs         Cost[]
+  calendarEvents CalendarEvent[]
+}
+
+model Technician {
+  id              String   @id @default(uuid())
+  name            String
+  trade           String
+  phone           String?
+  email           String?
+  address         String?
+  city            String?
+  state           String?
+  zipCode         String?
+  notes           String?
+  hourlyRate      Float    @default(0)
+  jobsDone        Int      @default(0)
+  gmnMoneyMade    Float    @default(0)
+  rating          Float    @default(5)
+  isBlacklisted   Boolean  @default(false)
+  blacklistReason String?
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workOrders WorkOrder[]
+  proposals  Proposal[]  @relation("TechnicianProposals")
+  helperFor  Proposal[]  @relation("HelperProposals")
+  costs      Cost[]
+}
+
+model WorkOrder {
+  id           String    @id @default(uuid())
+  woNumber     String    @unique
+  client       String
+  trade        String
+  description  String?
+  nte          Float     @default(0)
+  status       String    @default("waiting")
+  priority     String    @default("normal")
+  city         String?
+  state        String?
+  address      String?
+  etaAt        DateTime?
+  completedAt  DateTime?
+  notes        String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  technicianId String?
+  technician   Technician? @relation(fields: [technicianId], references: [id])
+  
+  createdById  String?
+  createdBy    User?       @relation(fields: [createdById], references: [id])
+
+  proposals Proposal[]
+  costs     Cost[]
+  files     File[]
+}
+
+model Proposal {
+  id             String   @id @default(uuid())
+  proposalNumber String   @unique
+  status         String   @default("draft")
+  
+  // Incurred costs
+  tripFee        Float    @default(0)
+  assessmentFee  Float    @default(0)
+  
+  // Labor
+  techHours      Float    @default(0)
+  techRate       Float    @default(0)
+  helperHours    Float    @default(0)
+  helperRate     Float    @default(0)
+  
+  // Parts & materials (JSON array)
+  parts          String   @default("[]")
+  
+  // Pricing
+  costMultiplier Float    @default(1.35)
+  taxRate        Float    @default(0)
+  
+  // Totals (calculated)
+  subtotal       Float    @default(0)
+  tax            Float    @default(0)
+  total          Float    @default(0)
+  
+  notes          String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  workOrderId  String
+  workOrder    WorkOrder   @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  
+  technicianId String?
+  technician   Technician? @relation("TechnicianProposals", fields: [technicianId], references: [id])
+  
+  helperId     String?
+  helper       Technician? @relation("HelperProposals", fields: [helperId], references: [id])
+  
+  createdById  String?
+  createdBy    User?       @relation(fields: [createdById], references: [id])
+}
+
+model Cost {
+  id         String    @id @default(uuid())
+  amount     Float
+  status     String    @default("requested")
+  note       String?
+  requestedAt DateTime @default(now())
+  approvedAt  DateTime?
+  paidAt      DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workOrderId  String
+  workOrder    WorkOrder  @relation(fields: [workOrderId], references: [id], onDelete: Cascade)
+  
+  technicianId String
+  technician   Technician @relation(fields: [technicianId], references: [id])
+  
+  createdById  String?
+  createdBy    User?      @relation(fields: [createdById], references: [id])
+}
+
+model File {
+  id        String   @id @default(uuid())
+  name      String
+  type      String
+  size      Int
+  path      String
+  createdAt DateTime @default(now())
+
+  workOrderId String?
+  workOrder   WorkOrder? @relation(fields: [workOrderId], references: [id], onDelete: SetNull)
+}
+
+model CalendarEvent {
+  id          String   @id @default(uuid())
+  title       String
+  description String?
+  dateTime    DateTime
+  endTime     DateTime?
+  priority    String   @default("normal")
+  color       String   @default("#0ea5e9")
+  isCompleted Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  createdById String?
+  createdBy   User?   @relation(fields: [createdById], references: [id])
+}

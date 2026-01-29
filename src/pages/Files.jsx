@@ -1,395 +1,229 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import PageHeader from "../components/PageHeader";
+import { useEffect, useState, useCallback, useRef } from "react";
+import { Upload, Search, Folder, Image, FileText, Video, Trash2, ExternalLink, ChevronDown } from "lucide-react";
 import PageTransition from "../components/PageTransition";
-import Modal from "../components/Modal";
-import { getBlob, putBlob, deleteBlob } from "../lib/fileStore";
+import PageHeader from "../components/PageHeader";
+import { PageLoader } from "../components/LoadingSpinner";
+import ErrorMessage from "../components/ErrorMessage";
+import EmptyState from "../components/EmptyState";
+import { filesApi, workOrdersApi } from "../api";
 
-const WO_STORAGE_KEY = "gmn_workorders_v1";
-const FILES_STORAGE_KEY = "gmn_files_v1";
+const FILE_TYPES = [
+  { value: "all", label: "All Files" },
+  { value: "image", label: "Images" },
+  { value: "pdf", label: "PDFs" },
+  { value: "video", label: "Videos" },
+];
 
-function safeParse(raw, fallback) {
-  try {
-    const v = raw ? JSON.parse(raw) : fallback;
-    return v ?? fallback;
-  } catch {
-    return fallback;
-  }
+function getFileIcon(type) {
+  if (type?.startsWith("image/")) return Image;
+  if (type === "application/pdf") return FileText;
+  if (type?.startsWith("video/")) return Video;
+  return Folder;
 }
 
-function loadWorkOrders() {
-  const v = safeParse(localStorage.getItem(WO_STORAGE_KEY), []);
-  return Array.isArray(v) ? v : [];
-}
-
-function loadFiles() {
-  const v = safeParse(localStorage.getItem(FILES_STORAGE_KEY), []);
-  return Array.isArray(v) ? v : [];
-}
-
-function saveFiles(list) {
-  localStorage.setItem(FILES_STORAGE_KEY, JSON.stringify(list));
-}
-
-function uid() {
-  return crypto?.randomUUID ? crypto.randomUUID() : String(Date.now());
-}
-
-function isAllowedType(type) {
-  return (
-    type === "application/pdf" ||
-    type.startsWith("image/") ||
-    type.startsWith("video/")
-  );
-}
-
-function formatBytes(bytes) {
-  const b = Number(bytes || 0);
-  if (!Number.isFinite(b) || b <= 0) return "—";
-  const units = ["B", "KB", "MB", "GB"];
-  let i = 0;
-  let n = b;
-  while (n >= 1024 && i < units.length - 1) {
-    n /= 1024;
-    i += 1;
-  }
-  return `${n.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+function formatSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function Files() {
-  const workOrders = useMemo(() => loadWorkOrders(), []);
-  const [files, setFiles] = useState(() => loadFiles());
-
-  const [open, setOpen] = useState(false);
-  const [woId, setWoId] = useState("");
-
-  // ✅ UX
-  const [q, setQ] = useState("");
-  const [showOrphans, setShowOrphans] = useState(false);
+  const [files, setFiles] = useState([]);
+  const [workOrders, setWorkOrders] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [search, setSearch] = useState("");
+  const [typeFilter, setTypeFilter] = useState("all");
   const [uploading, setUploading] = useState(false);
+  const [selectedWo, setSelectedWo] = useState("");
+  const fileInputRef = useRef(null);
 
-  useEffect(() => saveFiles(files), [files]);
-
-  const filesWithWO = useMemo(() => {
-    const woById = new Map(workOrders.map((w) => [w.id, w]));
-    return files.map((f) => ({
-      ...f,
-      wo: woById.get(f.woId) || null, // null means orphan
-    }));
-  }, [files, workOrders]);
-
-  const filtered = useMemo(() => {
-    const text = q.trim().toLowerCase();
-    return filesWithWO.filter((f) => {
-      if (!showOrphans && !f.wo) return false;
-
-      const blob = [
-        f.wo?.wo,
-        f.wo?.client,
-        f.name,
-        f.type,
-        f.createdAt,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      return !text || blob.includes(text);
-    });
-  }, [filesWithWO, q, showOrphans]);
-
-  async function handleUpload(selectedFiles, resetInput) {
-    if (uploading) return;
-
-    if (!woId) {
-      alert("Select a Work Order first.");
-      return;
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [filesRes, woRes] = await Promise.all([
+        filesApi.getAll({ limit: 100, type: typeFilter !== "all" ? typeFilter : undefined }),
+        workOrdersApi.getAll({ limit: 100 }),
+      ]);
+      setFiles(filesRes.data || []);
+      setWorkOrders(woRes.data || []);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
     }
+  }, [typeFilter]);
 
-    const list = Array.from(selectedFiles || []);
-    if (!list.length) return;
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  async function handleUpload(e) {
+    const uploadedFiles = e.target.files;
+    if (!uploadedFiles?.length) return;
 
     setUploading(true);
     try {
-      for (const file of list) {
-        if (!isAllowedType(file.type)) {
-          alert(`Unsupported file type: ${file.type || "unknown"}`);
-          continue;
-        }
-
-        // store blob in IndexedDB
-        const id = uid();
-        await putBlob(id, file);
-
-        // store metadata in localStorage
-        const record = {
-          id,
-          woId,
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          createdAt: new Date().toISOString(),
-        };
-
-        setFiles((prev) => [record, ...prev]);
+      for (const file of uploadedFiles) {
+        await filesApi.upload(file, selectedWo || null);
       }
-
-      setOpen(false);
+      loadData();
+    } catch (err) {
+      alert(err.message);
     } finally {
       setUploading(false);
-      resetInput?.();
+      if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
 
-  async function previewFile(f) {
-    const blob = await getBlob(f.id);
-    if (!blob) {
-      alert("File not found in local storage (IndexedDB).");
-      return;
+  async function handleDelete(file) {
+    if (!confirm(`Delete ${file.name}?`)) return;
+    try {
+      await filesApi.delete(file.id);
+      loadData();
+    } catch (err) {
+      alert(err.message);
     }
-
-    const url = URL.createObjectURL(blob);
-
-    // open safely
-    const w = window.open(url, "_blank", "noopener,noreferrer");
-    if (!w) alert("Popup blocked. Please allow popups to preview.");
-
-    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
-  async function removeFile(f) {
-    const ok = confirm(`Delete this file?\n\n${f.name}\n\nThis cannot be undone.`);
-    if (!ok) return;
-
-    await deleteBlob(f.id);
-    setFiles((prev) => prev.filter((x) => x.id !== f.id));
+  function openFile(file) {
+    window.open(filesApi.getUrl(file.path), "_blank");
   }
+
+  const filteredFiles = search
+    ? files.filter(f => f.name.toLowerCase().includes(search.toLowerCase()))
+    : files;
+
+  if (loading) return <PageLoader message="Loading files..." />;
 
   return (
     <PageTransition>
-      <div className="space-y-5">
-        <PageHeader
-          title="Files"
-          subtitle="Upload and attach documents to specific Work Orders."
-          actions={
-            <button className="btn-primary" onClick={() => setOpen(true)} type="button">
-              Upload
-            </button>
-          }
-        />
-
-        {/* Filters */}
-        <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 ui-hover">
-          <div className="grid gap-3 md:grid-cols-12">
-            <div className="md:col-span-7">
-              <input
-                className="input"
-                placeholder="Search WO#, client, file name, type…"
-                value={q}
-                onChange={(e) => setQ(e.target.value)}
-              />
-            </div>
-
-            <div className="md:col-span-3 flex items-center gap-2">
-              <button
-                type="button"
-                className={[
-                  "rounded-xl px-3 py-2 text-xs font-semibold ui-hover ui-focus tap-feedback w-full",
-                  showOrphans
-                    ? "bg-amber-600 text-white hover:bg-amber-700"
-                    : "border border-slate-200 bg-white hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800",
-                ].join(" ")}
-                onClick={() => setShowOrphans((v) => !v)}
-                title="Orphans are files whose WO was deleted or missing."
-              >
-                {showOrphans ? "Showing Orphans" : "Hide Orphans"}
-              </button>
-            </div>
-
-            <div className="md:col-span-2 flex items-center justify-between rounded-xl bg-slate-50 px-3 py-2 text-xs text-slate-600 dark:bg-slate-950 dark:text-slate-300">
-              <span className="font-semibold">Results</span>
-              <span className="tabular-nums">{filtered.length}</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
-          <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-            <div>
-              <div className="text-sm font-bold">Attached Files</div>
-              <div className="text-xs text-slate-500 dark:text-slate-400">
-                Metadata in localStorage + blobs in IndexedDB.
-              </div>
-            </div>
-            <div className="text-xs text-slate-500 dark:text-slate-400">
-              {filtered.length} items
-            </div>
-          </div>
-
-          <div className="overflow-auto gmn-scroll">
-            <table className="min-w-full text-sm">
-              <thead className="sticky top-0 z-10 bg-slate-50 text-slate-600 border-b border-slate-200 dark:bg-slate-950 dark:text-slate-300 dark:border-slate-800">
-                <tr>
-                  <th className="px-4 py-3 text-left font-semibold">WO#</th>
-                  <th className="px-4 py-3 text-left font-semibold">File</th>
-                  <th className="px-4 py-3 text-left font-semibold">Type</th>
-                  <th className="px-4 py-3 text-left font-semibold">Uploaded</th>
-                  <th className="px-4 py-3 text-right font-semibold">Actions</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {filtered.map((f, idx) => (
-                  <tr
-                    key={f.id}
-                    className={[
-                      "border-t border-slate-100 dark:border-slate-800/70",
-                      idx % 2 === 0
-                        ? "bg-white dark:bg-slate-900"
-                        : "bg-slate-50/30 dark:bg-slate-900/60",
-                    ].join(" ")}
-                  >
-                    <td className="px-4 py-3 font-semibold">
-                      {f.wo?.wo || (
-                        <span className="inline-flex items-center rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ring-inset bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-200 dark:ring-amber-900/40">
-                          Orphan
-                        </span>
-                      )}
-                    </td>
-
-                    <td className="px-4 py-3">
-                      <div className="font-medium">{f.name}</div>
-                      <div className="text-xs text-slate-500 dark:text-slate-400">
-                        {formatBytes(f.size)}
-                      </div>
-                    </td>
-
-                    <td className="px-4 py-3">{f.type || "—"}</td>
-
-                    <td className="px-4 py-3">
-                      {f.createdAt ? new Date(f.createdAt).toLocaleString() : "—"}
-                    </td>
-
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex justify-end gap-2">
-                        <button
-                          className="btn-ghost px-3 py-1.5 text-xs"
-                          onClick={() => previewFile(f)}
-                          type="button"
-                        >
-                          Preview
-                        </button>
-                        <button
-                          className="rounded-xl bg-slate-950 px-3 py-1.5 text-xs font-semibold text-white hover:opacity-95 dark:bg-white dark:text-slate-900 ui-hover ui-focus tap-feedback"
-                          onClick={() => removeFile(f)}
-                          type="button"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-
-                {filtered.length === 0 ? (
-                  <tr>
-                    <td colSpan={5} className="px-4 py-10 text-center">
-                      <div className="text-sm font-semibold">No files</div>
-                      <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                        Upload files and attach them to a Work Order.
-                      </div>
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        </div>
-
-        <UploadModal
-          open={open}
-          onClose={() => setOpen(false)}
-          workOrders={workOrders}
-          woId={woId}
-          setWoId={setWoId}
-          uploading={uploading}
-          onUpload={handleUpload}
-        />
-      </div>
-    </PageTransition>
-  );
-}
-
-function UploadModal({ open, onClose, workOrders, woId, setWoId, uploading, onUpload }) {
-  const inputRef = useRef(null);
-
-  return (
-    <Modal
-      open={open}
-      title="Upload Files"
-      subtitle="Attach PNG/JPEG/PDF/MP4 directly to a Work Order."
-      onClose={onClose}
-    >
-      <div className="grid gap-4">
-        <label className="block">
-          <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-            Work Order *
-          </div>
-          <div className="mt-1">
+      <PageHeader
+        title="Files"
+        icon={Folder}
+        subtitle="Upload and manage project files"
+        actions={
+          <div className="flex items-center gap-3">
             <select
-              className="input"
-              value={woId}
-              onChange={(e) => setWoId(e.target.value)}
-              disabled={uploading}
+              value={selectedWo}
+              onChange={(e) => setSelectedWo(e.target.value)}
+              className="input text-sm py-2"
             >
-              <option value="" disabled>
-                Select WO#
-              </option>
-              {workOrders.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {w.wo} • {w.client}
-                </option>
+              <option value="">No work order</option>
+              {workOrders.map((wo) => (
+                <option key={wo.id} value={wo.id}>{wo.woNumber}</option>
               ))}
             </select>
+            <label className="btn-primary flex items-center gap-2 cursor-pointer">
+              <Upload size={18} />
+              {uploading ? "Uploading..." : "Upload"}
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept="image/*,application/pdf,video/*"
+                onChange={handleUpload}
+                className="hidden"
+                disabled={uploading}
+              />
+            </label>
           </div>
-        </label>
+        }
+      />
 
-        <label className="block">
-          <div className="text-xs font-semibold text-slate-600 dark:text-slate-300">
-            Files
-          </div>
-          <div className="mt-1">
-            <input
-              ref={inputRef}
-              type="file"
-              multiple
-              accept="image/*,application/pdf,video/mp4"
-              className="input"
-              disabled={!woId || uploading}
-              onChange={(e) =>
-                onUpload(e.target.files, () => {
-                  if (inputRef.current) inputRef.current.value = "";
-                })
-              }
-            />
-          </div>
+      {error && <ErrorMessage error={error} onRetry={loadData} className="mb-6" />}
 
-          <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
-            Note: Large videos can be heavy in the browser. Stage 2 should move this to backend storage.
-          </div>
-
-          {uploading ? (
-            <div className="mt-2 text-[11px] text-slate-600 dark:text-slate-300">
-              Uploading…
-            </div>
-          ) : null}
-        </label>
-
-        <div className="flex justify-end gap-2">
-          <button onClick={onClose} className="btn-ghost px-4 py-2.5" type="button">
-            Close
-          </button>
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-4 mb-6">
+        <div className="relative flex-1">
+          <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder="Search files..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="input pl-11"
+          />
+        </div>
+        <div className="relative">
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value)}
+            className="input appearance-none pr-10 min-w-[140px]"
+          >
+            {FILE_TYPES.map((opt) => (
+              <option key={opt.value} value={opt.value}>{opt.label}</option>
+            ))}
+          </select>
+          <ChevronDown size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
         </div>
       </div>
-    </Modal>
+
+      {/* Files Grid */}
+      {filteredFiles.length === 0 ? (
+        <EmptyState
+          icon={Folder}
+          title="No files found"
+          description={search || typeFilter !== "all" ? "Try adjusting your filters" : "Upload your first file to get started"}
+          actionLabel="Upload File"
+          onAction={() => fileInputRef.current?.click()}
+        />
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {filteredFiles.map((file) => {
+            const Icon = getFileIcon(file.type);
+            const isImage = file.type?.startsWith("image/");
+            
+            return (
+              <div key={file.id} className="card overflow-hidden group hover:shadow-lg transition-all">
+                {/* Preview */}
+                <div
+                  className="h-40 bg-slate-100 dark:bg-slate-800 flex items-center justify-center cursor-pointer relative overflow-hidden"
+                  onClick={() => openFile(file)}
+                >
+                  {isImage ? (
+                    <img
+                      src={filesApi.getUrl(file.path)}
+                      alt={file.name}
+                      className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                    />
+                  ) : (
+                    <Icon size={48} className="text-slate-400" />
+                  )}
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors flex items-center justify-center">
+                    <ExternalLink size={24} className="text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg" />
+                  </div>
+                </div>
+
+                {/* Info */}
+                <div className="p-4">
+                  <h3 className="font-medium truncate" title={file.name}>{file.name}</h3>
+                  <div className="flex items-center justify-between mt-2 text-sm text-slate-500 dark:text-slate-400">
+                    <span>{formatSize(file.size)}</span>
+                    {file.workOrder && (
+                      <span className="text-xs bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
+                        {file.workOrder.woNumber}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100 dark:border-slate-800">
+                    <span className="text-xs text-slate-400">
+                      {new Date(file.createdAt).toLocaleDateString()}
+                    </span>
+                    <button
+                      onClick={() => handleDelete(file)}
+                      className="p-1.5 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-900/20 text-rose-500 transition-colors"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </PageTransition>
   );
 }

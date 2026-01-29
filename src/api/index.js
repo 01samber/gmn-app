@@ -1,0 +1,9 @@
+export { default as api } from './client.js';
+export { default as authApi } from './auth.js';
+export { default as workOrdersApi } from './workOrders.js';
+export { default as techniciansApi } from './technicians.js';
+export { default as proposalsApi } from './proposals.js';
+export { default as costsApi } from './costs.js';
+export { default as filesApi } from './files.js';
+export { default as calendarApi } from './calendar.js';
+export { default as dashboardApi } from './dashboard.js';
