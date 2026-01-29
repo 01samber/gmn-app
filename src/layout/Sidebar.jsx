@@ -13,6 +13,7 @@ import {
   Sparkles,
   ChevronRight,
   Calculator,
+  BarChart3,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { authApi } from "../api";
@@ -28,6 +29,7 @@ const nav = [
   { to: "/files", label: "Files", icon: Folder },
   { to: "/calendar", label: "Calendar", icon: CalendarDays },
   { to: "/commission", label: "Commission", icon: Calculator },
+  { to: "/income-statement", label: "Income Statement", icon: BarChart3 },
 ];
 
 const CLEAR_APP_DATA_ON_LOGOUT = false;

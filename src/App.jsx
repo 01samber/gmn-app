@@ -15,6 +15,7 @@ import Proposals from './pages/Proposals';
 import Files from './pages/Files';
 import Calendar from './pages/Calendar';
 import Commission from './pages/Commission';
+import IncomeStatement from './pages/IncomeStatement';
 
 function ProtectedRoute({ children }) {
   const { isAuthenticated, loading } = useAuth();
@@ -75,6 +76,7 @@ export default function App() {
         <Route path="/files" element={<Files />} />
         <Route path="/calendar" element={<Calendar />} />
         <Route path="/commission" element={<Commission />} />
+        <Route path="/income-statement" element={<IncomeStatement />} />
       </Route>
 
       {/* Catch all - redirect to login */}
